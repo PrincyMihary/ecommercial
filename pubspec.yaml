@@ -1,0 +1,38 @@
+name: marketplace_app
+description: "Marketplace locale - Fondation Phase 1"
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.6
+  sqflite: ^2.3.3+1
+  path: ^1.9.0
+  path_provider: ^2.1.4
+  file_picker: ^10.3.8
+  image_picker: ^1.1.2
+  # Ajouté pour l'Étape 1 (fondations authentification) : hachage
+  # salé des mots de passe (SHA-256). Paquet pur Dart, maintenu par
+  # l'équipe Dart, sans dépendance native — volontairement minimal.
+  crypto: ^3.0.3
+  # Ajouté pour la V1 AR : visualisation du modèle .glb local en AR
+  # (Scene Viewer sur Android via Google Play Services for AR).
+  model_viewer_plus: ^1.10.0
+  http: ^1.6.0
+  url_launcher: ^6.3.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/models/
+    - assets/images/
