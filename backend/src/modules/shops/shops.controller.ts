@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import { toSafeApiId } from '../../api/serialization';
 import { BlockingOrdersException, NotFoundException, ValidationException } from '../../errors';
 import { orderDto } from '../orders/orders.mapper';
 import { getBlockingOrdersForShop } from '../orders/orders.repository';
@@ -16,8 +17,8 @@ import {
 function toDto(shop: Awaited<ReturnType<typeof getShopById>>) {
   if (!shop) return null;
   return {
-    id: shop.id,
-    ownerId: shop.owner_id,
+    id: toSafeApiId(shop.id, 'shop.id'),
+    ownerId: toSafeApiId(shop.owner_id, 'shop.ownerId'),
     name: shop.name,
     description: shop.description,
     address: shop.address,

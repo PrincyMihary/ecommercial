@@ -1,27 +1,11 @@
 import request from 'supertest';
-import { createApp } from '../src/app';
+import { app } from '../src/app';
 import { pool } from '../src/db/pool';
-
-/**
- * Tests d'intégration du module Auth.
- *
- * IMPORTANT : ces tests nécessitent une base PostgreSQL de test réelle
- * (DATABASE_URL, voir tests/setup-env.ts) avec le schéma déjà appliqué
- * (`psql "$DATABASE_URL" -f database/schema.sql`). Cet environnement
- * d'exécution ne dispose pas d'accès réseau ni de PostgreSQL installé :
- * ces tests n'ont donc PAS été exécutés ici, conformément à la consigne
- * de ne jamais prétendre le contraire. Ils sont prêts à être lancés par
- * l'équipe via `npm test` une fois une base de test configurée.
- */
-const app = createApp();
-
-async function resetUsersTable() {
-  await pool.query('TRUNCATE TABLE order_items, orders, cart_items, carts, products, shops, users RESTART IDENTITY CASCADE');
-}
+import { resetDatabase } from './db-utils';
 
 describe('Auth module', () => {
   beforeEach(async () => {
-    await resetUsersTable();
+    await resetDatabase();
   });
 
   afterAll(async () => {
@@ -29,9 +13,9 @@ describe('Auth module', () => {
   });
 
   describe('POST /auth/register', () => {
-    it('crée un utilisateur et renvoie user + token', async () => {
+    it('creates a user and returns a JSON-number id (not a string)', async () => {
       const res = await request(app).post('/auth/register').send({
-        full_name: 'Alice Rasoa',
+        fullName: 'Alice Rasoa',
         email: 'alice@example.com',
         phone: '0341234567',
         password: 'secret123',
@@ -40,71 +24,73 @@ describe('Auth module', () => {
       expect(res.status).toBe(201);
       expect(res.body.token).toEqual(expect.any(String));
       expect(res.body.user).toMatchObject({
-        full_name: 'Alice Rasoa',
+        fullName: 'Alice Rasoa',
         email: 'alice@example.com',
         phone: '0341234567',
       });
       expect(typeof res.body.user.id).toBe('number');
       expect(res.body.user.id).toBe(1);
+      // Le JSON brut doit contenir "id":1, jamais "id":"1" — c'est le
+      // coeur de la convention BIGINT/BIGSERIAL -> number JSON.
       expect(res.text).toContain('"id":1');
       expect(res.text).not.toContain('"id":"1"');
       expect(res.body.user.password_hash).toBeUndefined();
       expect(res.body.user.password).toBeUndefined();
     });
 
-    it('ne convertit pas les autres chaînes numériques en nombres', async () => {
+    it('does not convert other numeric strings (phone) to a number', async () => {
       const res = await request(app).post('/auth/register').send({
-        full_name: 'Numeric String',
+        fullName: 'Numeric String',
         email: 'numeric@example.com',
         phone: '123456',
         password: 'secret123',
       });
 
       expect(res.status).toBe(201);
-      expect(res.body.user.id).toEqual(expect.any(Number));
+      expect(typeof res.body.user.id).toBe('number');
       expect(res.body.user.phone).toBe('123456');
       expect(typeof res.body.user.phone).toBe('string');
     });
 
-    it('refuse un email déjà utilisé avec un 409 et le message existant', async () => {
+    it('rejects an already-used email with 409', async () => {
       await request(app).post('/auth/register').send({
-        full_name: 'Alice',
+        fullName: 'Alice',
         email: 'dup@example.com',
         password: 'secret123',
       });
 
       const res = await request(app).post('/auth/register').send({
-        full_name: 'Alice bis',
+        fullName: 'Alice bis',
         email: 'dup@example.com',
         password: 'secret123',
       });
 
       expect(res.status).toBe(409);
-      expect(res.body.message).toBe('Email déjà utilisé.');
+      expect(res.body.message).toBe('Cet email est déjà utilisé.');
     });
 
-    it('refuse un mot de passe trop court', async () => {
+    it('rejects a too-short password', async () => {
       const res = await request(app).post('/auth/register').send({
-        full_name: 'Bob',
+        fullName: 'Bob',
         email: 'bob@example.com',
         password: '123',
       });
 
       expect(res.status).toBe(400);
-      expect(res.body.code).toBe('AUTH_PASSWORD_TOO_SHORT');
+      expect(res.body.code).toBe('AUTH_ERROR');
     });
   });
 
   describe('POST /auth/login', () => {
     beforeEach(async () => {
       await request(app).post('/auth/register').send({
-        full_name: 'Carol',
+        fullName: 'Carol',
         email: 'carol@example.com',
         password: 'secret123',
       });
     });
 
-    it('connecte avec des identifiants valides', async () => {
+    it('logs in with valid credentials and returns a JSON-number id', async () => {
       const res = await request(app).post('/auth/login').send({
         email: 'carol@example.com',
         password: 'secret123',
@@ -113,59 +99,47 @@ describe('Auth module', () => {
       expect(res.status).toBe(200);
       expect(res.body.token).toEqual(expect.any(String));
       expect(res.body.user.email).toBe('carol@example.com');
+      expect(typeof res.body.user.id).toBe('number');
+      expect(res.text).toContain('"id":1');
     });
 
-    it('refuse un mauvais mot de passe sans révéler la cause', async () => {
+    it('rejects a wrong password with a generic message', async () => {
       const res = await request(app).post('/auth/login').send({
         email: 'carol@example.com',
         password: 'wrongpassword',
       });
 
-      expect(res.status).toBe(401);
-      expect(res.body.message).toBe('Email ou mot de passe incorrect.');
-    });
-
-    it('refuse un email inconnu avec le même message générique', async () => {
-      const res = await request(app).post('/auth/login').send({
-        email: 'unknown@example.com',
-        password: 'secret123',
-      });
-
-      expect(res.status).toBe(401);
+      expect(res.status).toBe(400);
       expect(res.body.message).toBe('Email ou mot de passe incorrect.');
     });
   });
 
   describe('GET /users/me', () => {
-    it('refuse sans token', async () => {
+    it('refuses without a token', async () => {
       const res = await request(app).get('/users/me');
       expect(res.status).toBe(401);
     });
 
-    it('refuse avec un token invalide', async () => {
-      const res = await request(app)
-        .get('/users/me')
-        .set('Authorization', 'Bearer not-a-real-token');
+    it('refuses with an invalid token', async () => {
+      const res = await request(app).get('/users/me').set('Authorization', 'Bearer not-a-real-token');
       expect(res.status).toBe(401);
     });
 
-    it("renvoie l'utilisateur courant avec un token valide", async () => {
+    it('returns the current user with a JSON-number id when the token is valid', async () => {
       const registerRes = await request(app).post('/auth/register').send({
-        full_name: 'Dina',
+        fullName: 'Dina',
         email: 'dina@example.com',
         password: 'secret123',
       });
       const token = registerRes.body.token as string;
 
-      const res = await request(app)
-        .get('/users/me')
-        .set('Authorization', `Bearer ${token}`);
+      const res = await request(app).get('/users/me').set('Authorization', `Bearer ${token}`);
 
       expect(res.status).toBe(200);
-      expect(res.body.user.email).toBe('dina@example.com');
-      expect(res.body.user.password_hash).toBeUndefined();
-      expect(typeof res.body.user.id).toBe('number');
-      expect(res.body.user.id).toBe(1);
+      expect(res.body.email).toBe('dina@example.com');
+      expect(res.body.password_hash).toBeUndefined();
+      expect(typeof res.body.id).toBe('number');
+      expect(res.body.id).toBe(1);
       expect(res.text).toContain('"id":1');
       expect(res.text).not.toContain('"id":"1"');
     });

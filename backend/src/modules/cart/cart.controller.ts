@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import { toSafeApiId } from '../../api/serialization';
 import { ValidationException } from '../../errors';
 import {
   addCartItem,
@@ -11,7 +12,7 @@ import {
 
 function toDto(row: { product_id: number; product_name: string; price: string; image: string | null; stock: number; quantity: number }) {
   return {
-    productId: row.product_id,
+    productId: toSafeApiId(row.product_id, 'cart_item.productId'),
     productName: row.product_name,
     price: Number(row.price),
     image: row.image,

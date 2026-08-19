@@ -1,5 +1,6 @@
 import { pool } from '../../db/pool';
 import { AuthException } from '../../errors';
+import { toSafeApiId } from '../../api/serialization';
 
 export interface UserRow {
   id: number;
@@ -48,7 +49,7 @@ export async function insertUser(data: {
 /** Représentation publique d'un utilisateur : jamais password_hash. */
 export function toPublicUser(row: UserRow) {
   return {
-    id: row.id,
+    id: toSafeApiId(row.id, 'user.id'),
     fullName: row.full_name,
     email: row.email,
     phone: row.phone,

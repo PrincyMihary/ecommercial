@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import { toSafeApiId } from '../../api/serialization';
 import { BlockingOrdersException, NotFoundException, ValidationException } from '../../errors';
 import { orderDto } from '../orders/orders.mapper';
 import { getBlockingOrdersForProduct } from '../orders/orders.repository';
@@ -19,8 +20,8 @@ import {
 function toDto(product: ProductRow | null) {
   if (!product) return null;
   return {
-    id: product.id,
-    shopId: product.shop_id,
+    id: toSafeApiId(product.id, 'product.id'),
+    shopId: toSafeApiId(product.shop_id, 'product.shopId'),
     name: product.name,
     description: product.description,
     price: Number(product.price),
