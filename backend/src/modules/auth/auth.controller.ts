@@ -1,5 +1,7 @@
 import { NextFunction, Request, Response } from 'express';
 import { AppError } from '../../errors/AppError';
+import { API_ID_PATHS } from '../../api/id-paths';
+import { sendApiJson } from '../../api/serialization';
 import * as authService from './auth.service';
 
 export async function registerHandler(
@@ -15,7 +17,7 @@ export async function registerHandler(
       phone: typeof body.phone === 'string' ? body.phone : null,
       password: typeof body.password === 'string' ? body.password : '',
     });
-    res.status(201).json(result);
+    sendApiJson(res, 201, result, API_ID_PATHS.authUser);
   } catch (err) {
     next(err);
   }
@@ -32,7 +34,7 @@ export async function loginHandler(
       email: typeof body.email === 'string' ? body.email : '',
       password: typeof body.password === 'string' ? body.password : '',
     });
-    res.status(200).json(result);
+    sendApiJson(res, 200, result, API_ID_PATHS.authUser);
   } catch (err) {
     next(err);
   }
@@ -50,7 +52,7 @@ export async function meHandler(
       throw new AppError(401, 'AUTH_TOKEN_MISSING', 'Authentification requise.');
     }
     const user = await authService.getCurrentUser(req.user.id);
-    res.status(200).json({ user });
+    sendApiJson(res, 200, { user }, API_ID_PATHS.authUser);
   } catch (err) {
     next(err);
   }

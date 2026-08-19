@@ -4,5 +4,5 @@
 process.env.JWT_SECRET = process.env.JWT_SECRET ?? 'test-secret-do-not-use-in-prod';
 process.env.JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN ?? '1h';
 process.env.DATABASE_URL =
-  process.env.DATABASE_URL ?? 'postgres://postgres:postgres@localhost:5432/ecommercial_test';
+  process.env.DATABASE_URL ?? 'postgres://postgres:2305@localhost:5433/ecommercial_test';
 process.env.NODE_ENV = 'test';

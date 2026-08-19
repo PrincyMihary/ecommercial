@@ -276,6 +276,9 @@ backend/
 │   ├── modules/
 │   │   ├── auth/                    # register / login (auth.routes/controller/service/repository)
 │   │   └── users/                   # GET /users/me (protégée par `authenticate`)
+│   ├── api/
+│   │   ├── id-paths.ts             # Allowlist explicite des chemins d'ID BIGINT/BIGSERIAL
+│   │   └── serialization.ts        # Sérialisation API centralisée et sûre
 │   ├── types/express.d.ts         # Typage `req.user`
 │   ├── app.ts                      # Application Express (JSON, /health, /auth, /users, erreurs)
 │   └── server.ts                   # Point d'entrée : démarre le serveur HTTP

@@ -44,8 +44,26 @@ describe('Auth module', () => {
         email: 'alice@example.com',
         phone: '0341234567',
       });
+      expect(typeof res.body.user.id).toBe('number');
+      expect(res.body.user.id).toBe(1);
+      expect(res.text).toContain('"id":1');
+      expect(res.text).not.toContain('"id":"1"');
       expect(res.body.user.password_hash).toBeUndefined();
       expect(res.body.user.password).toBeUndefined();
+    });
+
+    it('ne convertit pas les autres chaînes numériques en nombres', async () => {
+      const res = await request(app).post('/auth/register').send({
+        full_name: 'Numeric String',
+        email: 'numeric@example.com',
+        phone: '123456',
+        password: 'secret123',
+      });
+
+      expect(res.status).toBe(201);
+      expect(res.body.user.id).toEqual(expect.any(Number));
+      expect(res.body.user.phone).toBe('123456');
+      expect(typeof res.body.user.phone).toBe('string');
     });
 
     it('refuse un email déjà utilisé avec un 409 et le message existant', async () => {
@@ -146,6 +164,10 @@ describe('Auth module', () => {
       expect(res.status).toBe(200);
       expect(res.body.user.email).toBe('dina@example.com');
       expect(res.body.user.password_hash).toBeUndefined();
+      expect(typeof res.body.user.id).toBe('number');
+      expect(res.body.user.id).toBe(1);
+      expect(res.text).toContain('"id":1');
+      expect(res.text).not.toContain('"id":"1"');
     });
   });
 });
