@@ -12,6 +12,8 @@ interface EnvConfig {
   port: number;
   databaseUrl: string;
   nodeEnv: string;
+  jwtSecret: string;
+  jwtExpiresIn: string;
 }
 
 function requireEnv(name: string): string {
@@ -35,10 +37,19 @@ function loadEnv(): EnvConfig {
 
   const databaseUrl = requireEnv('DATABASE_URL');
 
+  // JWT_SECRET est obligatoire : jamais de valeur par défaut hardcodée,
+  // pour éviter qu'un secret prévisible ne finisse en production par
+  // inadvertance (voir consigne du module Auth : "Ne jamais hardcoder le
+  // secret").
+  const jwtSecret = requireEnv('JWT_SECRET');
+  const jwtExpiresIn = process.env.JWT_EXPIRES_IN ?? '7d';
+
   return {
     port,
     databaseUrl,
     nodeEnv: process.env.NODE_ENV ?? 'development',
+    jwtSecret,
+    jwtExpiresIn,
   };
 }
 
