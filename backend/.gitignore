@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.env
+*.log
+npm-debug.log*
+.DS_Store
+
+# Fichiers uploadés en local (gardés hors du repo, dossiers conservés via .gitkeep)
+uploads/shops/*
+uploads/products/*
+uploads/models/*
+!uploads/shops/.gitkeep
+!uploads/products/.gitkeep
+!uploads/models/.gitkeep
+/README.md
