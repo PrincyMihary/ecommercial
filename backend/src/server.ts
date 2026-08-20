@@ -2,8 +2,8 @@ import { app } from './app';
 import { env } from './config/env';
 import { pool } from './db/pool';
 
-const server = app.listen(env.port, () => {
-  console.log(`ecommercial-backend en écoute sur http://localhost:${env.port}`);
+const server = app.listen(env.port, '0.0.0.0', () => {
+  console.log(`ecommercial-backend en écoute sur http://0.0.0.0:${env.port}`);
 });
 
 async function shutdown(signal: string) {

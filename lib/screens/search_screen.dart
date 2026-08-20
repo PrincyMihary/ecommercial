@@ -1,18 +1,21 @@
 import 'package:flutter/material.dart';
 
-import '../database/database_helper.dart';
 import '../models/product.dart';
+import '../repositories/product_repository.dart';
 import '../theme/app_theme.dart';
 import '../widgets/product_card.dart';
 import 'product_detail_screen.dart';
 import '../constants/product_categories.dart';
+
 /// Écran de recherche dédié (onglet "Recherche").
 ///
-/// Réutilise [DatabaseHelper.searchProducts] (même méthode que
-/// [HomeScreen]) pour éviter toute duplication de logique SQL, ainsi
-/// que [ProductCard] pour l'affichage des résultats. L'état de
-/// recherche (texte + catégorie) est indépendant de celui de la Home :
-/// chaque écran garde son propre filtre.
+/// Migration REST : réutilise [ProductRepository.search]
+/// (`GET /products/search?q=&category=`), la même méthode que
+/// [HomeScreen], pour éviter toute duplication de logique de filtre.
+/// Le filtrage a lieu entièrement côté backend, jamais en mémoire
+/// ici — même principe que `HomeScreen._search`. L'état de recherche
+/// (texte + catégorie) reste indépendant de celui de la Home : chaque
+/// écran garde son propre filtre.
 class SearchScreen extends StatefulWidget {
   const SearchScreen({super.key});
 
@@ -21,6 +24,8 @@ class SearchScreen extends StatefulWidget {
 }
 
 class _SearchScreenState extends State<SearchScreen> {
+  final ProductRepository _productRepository = ProductRepository();
+
   final TextEditingController _searchController = TextEditingController();
   String _selectedCategory = 'Tout';
   late Future<List<Product>> _resultsFuture;
@@ -42,12 +47,11 @@ class _SearchScreenState extends State<SearchScreen> {
     super.dispose();
   }
 
-  Future<List<Product>> _search() async {
-    final rows = await DatabaseHelper.instance.searchProducts(
+  Future<List<Product>> _search() {
+    return _productRepository.search(
       query: _searchController.text,
       category: _selectedCategory,
     );
-    return rows.map((row) => Product.fromMap(row)).toList();
   }
 
   void _onSearchChanged(String value) {

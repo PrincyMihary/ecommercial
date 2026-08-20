@@ -23,7 +23,7 @@ const VALID_PAYMENT_METHODS = ['orange_money', 'yas', 'visa'];
  * directement à `paid` dans la même transaction.
  */
 export async function checkout(req: Request, res: Response) {
-  const paymentMethod = String(req.body?.paymentMethod ?? '');
+  const paymentMethod = String(req.body?.paymentMethod ?? payment_method ?? paymentmethod ?? '');
   if (!VALID_PAYMENT_METHODS.includes(paymentMethod)) {
     throw new ValidationException('Moyen de paiement invalide.');
   }

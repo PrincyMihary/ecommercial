@@ -1,26 +1,44 @@
 import 'package:flutter/material.dart';
 
-import '../database/database_helper.dart';
 import '../models/order_item.dart';
 import '../models/order_status.dart';
+import '../repositories/order_repository.dart';
 import '../theme/app_theme.dart';
 import '../utils/formatters.dart';
 import 'order_detail_screen.dart';
 
-/// Étape 4 : écran affiché à la place d'un message d'erreur opaque
-/// quand une suppression (produit ou commerce) est refusée à cause de
+/// Écran affiché à la place d'un message d'erreur opaque quand une
+/// suppression (produit ou commerce) est refusée à cause de
 /// commandes non finalisées. Liste les commandes concernées, avec
 /// leurs lignes pertinentes, et permet d'ouvrir leur détail pour les
 /// faire avancer / les rembourser.
+///
+/// Migration REST : dans les deux cas d'appel (suppression de
+/// commerce via [shopId], suppression de produit via [productId]),
+/// l'appelant est toujours le PROPRIÉTAIRE du commerce concerné —
+/// `OrderRepository.getItemsForMyShop(orderId)`
+/// (`GET /orders/:id/items/shop`) résout donc ce commerce depuis
+/// l'utilisateur authentifié côté backend et renvoie déjà le bon
+/// sous-ensemble de lignes, sans qu'il soit nécessaire de transmettre
+/// [shopId] explicitement. Le filtre additionnel par [productId],
+/// quand fourni (cas "suppression d'un produit"), reste appliqué
+/// localement sur ce sous-ensemble déjà scoping — pas de
+/// réintroduction de `getOrderItems()` (toutes les lignes, non
+/// scopées) ni de `getOrderItemsForShop()` local.
 class BlockingOrdersScreen extends StatelessWidget {
   final String title;
   final String explanation;
   final List<Map<String, dynamic>> orders;
 
   /// Si fourni, les lignes affichées par commande sont filtrées sur
-  /// ce produit (cas "suppression d'un produit"). Sinon [shopId] sert
-  /// de filtre (cas "suppression d'un commerce").
+  /// ce produit (cas "suppression d'un produit").
   final int? productId;
+
+  /// Conservé pour compatibilité d'appel (voir `shop_detail_screen.dart`
+  /// / `product_detail_screen.dart`) : n'est plus transmis au
+  /// backend, qui résout désormais toujours le commerce depuis
+  /// l'utilisateur authentifié plutôt que depuis un id fourni par le
+  /// client.
   final int? shopId;
 
   const BlockingOrdersScreen({
@@ -33,11 +51,7 @@ class BlockingOrdersScreen extends StatelessWidget {
   });
 
   Future<List<OrderItem>> _relevantItems(int orderId) async {
-    final db = DatabaseHelper.instance;
-    final rows = shopId != null
-        ? await db.getOrderItemsForShop(orderId, shopId!)
-        : await db.getOrderItems(orderId);
-    final items = rows.map(OrderItem.fromMap).toList();
+    final items = await OrderRepository().getItemsForMyShop(orderId);
     if (productId != null) {
       return items.where((i) => i.productId == productId).toList();
     }

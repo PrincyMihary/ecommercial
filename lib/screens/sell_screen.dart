@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:marketplace_app/screens/shop_order_list_screen.dart';
 
-import '../database/database_helper.dart';
+import '../models/shop.dart';
+import '../repositories/shop_repository.dart';
+import '../services/api_client.dart';
 import '../services/auth_service.dart';
 import '../theme/app_theme.dart';
 import 'login_screen.dart';
@@ -11,20 +13,124 @@ import 'shop_detail_screen.dart';
 import 'shop_form_screen.dart';
 import 'signup_screen.dart';
 
+/// État résolu du commerce de l'utilisateur, consommé par
+/// [SellScreenVisibility.compute].
+///
+/// Distinct d'un simple `Shop?` : permet de représenter explicitement
+/// l'état [error] (ni "a un commerce", ni "n'en a pas"), pour que
+/// `_shopFuture` échouant avec une erreur autre que 404 ne soit
+/// JAMAIS interprété comme "aucun commerce" — voir
+/// [_SellScreenState._loadMyShop].
+enum SellScreenShopState { loading, none, present, error }
+
+/// Calcule quelles tuiles afficher sur [SellScreen], à partir de :
+/// - si l'utilisateur est connecté ;
+/// - l'état résolu de son commerce (voir [SellScreenShopState]).
+///
+/// Fonction pure (aucun accès réseau, aucun `BuildContext`, aucun
+/// effet de bord) : c'est ce qui permet de tester exhaustivement la
+/// logique de visibilité des tuiles (voir
+/// `test/screens/sell_screen_test.dart`) sans avoir à simuler
+/// AuthService/ApiClient dans un test de widget.
+class SellScreenVisibility {
+  final bool showGuestBlock;
+  final bool showLoading;
+  final bool showError;
+  final bool showMyShop;
+  final bool showCreateShop;
+  final bool showMyProducts;
+  final bool showReceivedOrders;
+  final bool showAddProduct;
+
+  const SellScreenVisibility._({
+    required this.showGuestBlock,
+    required this.showLoading,
+    required this.showError,
+    required this.showMyShop,
+    required this.showCreateShop,
+    required this.showMyProducts,
+    required this.showReceivedOrders,
+    required this.showAddProduct,
+  });
+
+  factory SellScreenVisibility.compute({
+    required bool isLoggedIn,
+    required SellScreenShopState shopState,
+  }) {
+    if (!isLoggedIn) {
+      return const SellScreenVisibility._(
+        showGuestBlock: true,
+        showLoading: false,
+        showError: false,
+        showMyShop: false,
+        showCreateShop: false,
+        showMyProducts: false,
+        showReceivedOrders: false,
+        showAddProduct: false,
+      );
+    }
+
+    switch (shopState) {
+      case SellScreenShopState.loading:
+        return const SellScreenVisibility._(
+          showGuestBlock: false,
+          showLoading: true,
+          showError: false,
+          showMyShop: false,
+          showCreateShop: false,
+          showMyProducts: false,
+          showReceivedOrders: false,
+          showAddProduct: false,
+        );
+      case SellScreenShopState.error:
+        return const SellScreenVisibility._(
+          showGuestBlock: false,
+          showLoading: false,
+          showError: true,
+          showMyShop: false,
+          showCreateShop: false,
+          showMyProducts: false,
+          showReceivedOrders: false,
+          showAddProduct: false,
+        );
+      case SellScreenShopState.none:
+        return const SellScreenVisibility._(
+          showGuestBlock: false,
+          showLoading: false,
+          showError: false,
+          showMyShop: false,
+          showCreateShop: true,
+          showMyProducts: true,
+          showReceivedOrders: false,
+          showAddProduct: true,
+        );
+      case SellScreenShopState.present:
+        return const SellScreenVisibility._(
+          showGuestBlock: false,
+          showLoading: false,
+          showError: false,
+          showMyShop: true,
+          showCreateShop: false,
+          showMyProducts: true,
+          showReceivedOrders: true,
+          showAddProduct: true,
+        );
+    }
+  }
+}
+
 /// Écran "Vendre" : point d'entrée vers la gestion du commerce et des
 /// produits.
 ///
-/// Étape 2 : le point d'entrée "commerce" respecte désormais la règle
-/// métier (1 utilisateur = 0 ou 1 commerce) :
+/// Règle métier (1 utilisateur = 0 ou 1 commerce), déterminée via
+/// `GET /shops/me` ([ShopRepository.getMine]) :
 /// - Guest : écran bloqué, invitation à se connecter/s'inscrire ;
-/// - User sans commerce : tuile "Créer mon commerce" ;
-/// - User avec commerce : tuile "Mon commerce" (accès direct).
-///
-/// La gestion des produits ("Mes produits" / "Ajouter un produit")
-/// n'est pas encore restreinte par propriétaire à cette étape (voir
-/// énoncé : la logique commerçant complète sur les produits viendra à
-/// l'étape suivante) — ces tuiles restent donc inchangées pour tout
-/// utilisateur connecté.
+/// - User sans commerce (404) : tuile "Créer mon commerce" ;
+/// - User avec commerce (200) : tuile "Mon commerce" + "Commandes
+///   reçues" ;
+/// - Erreur réseau/API (ni 200 ni 404) : état d'erreur explicite avec
+///   "Réessayer" — jamais confondu avec "aucun commerce" (voir
+///   [_loadMyShop]).
 class SellScreen extends StatefulWidget {
   const SellScreen({super.key});
 
@@ -33,7 +139,9 @@ class SellScreen extends StatefulWidget {
 }
 
 class _SellScreenState extends State<SellScreen> {
-  Future<Map<String, dynamic>?>? _shopFuture;
+  final ShopRepository _shopRepository = ShopRepository();
+
+  Future<Shop?>? _shopFuture;
 
   @override
   void initState() {
@@ -55,15 +163,29 @@ class _SellScreenState extends State<SellScreen> {
 
   void _refreshShop() {
     final user = AuthService.instance.currentUser;
-    _shopFuture = user == null
-        ? Future.value(null)
-        : DatabaseHelper.instance.getShopByOwnerId(user.id);
+    _shopFuture = user == null ? Future.value(null) : _loadMyShop();
+  }
+
+  /// `GET /shops/me` renvoie 404 (`ApiException`) si l'utilisateur n'a
+  /// pas encore de commerce ; on traduit UNIQUEMENT ce cas précis en
+  /// `null`. Toute autre `ApiException` (réseau, timeout, 500...) est
+  /// relancée telle quelle, pour que le `FutureBuilder` la distingue
+  /// explicitement d'un "aucun commerce" (voir [_buildLoggedInBody]).
+  Future<Shop?> _loadMyShop() async {
+    try {
+      return await _shopRepository.getMine();
+    } on ApiException catch (e) {
+      if (e.statusCode == 404) return null;
+      rethrow;
+    }
   }
 
   void _open(BuildContext context, Widget screen) {
     Navigator.push(context, MaterialPageRoute(builder: (_) => screen)).then((_) {
-      // Une visite du formulaire de commerce ou du détail commerce a
-      // pu changer le statut commerçant (création, suppression...).
+      // Une visite du formulaire de commerce, du détail commerce, de
+      // la liste produits ou des commandes reçues a pu changer le
+      // statut commerçant (création/suppression du commerce...) :
+      // l'état est toujours recalculé au retour.
       if (mounted) setState(_refreshShop);
     });
   }
@@ -132,16 +254,35 @@ class _SellScreenState extends State<SellScreen> {
     );
   }
 
+  SellScreenShopState _shopStateFrom(AsyncSnapshot<Shop?> snapshot) {
+    if (snapshot.connectionState == ConnectionState.waiting) {
+      return SellScreenShopState.loading;
+    }
+    if (snapshot.hasError) {
+      return SellScreenShopState.error;
+    }
+    return snapshot.data != null ? SellScreenShopState.present : SellScreenShopState.none;
+  }
+
   Widget _buildLoggedInBody() {
-    return FutureBuilder<Map<String, dynamic>?>(
+    return FutureBuilder<Shop?>(
       future: _shopFuture,
       builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
+        final visibility = SellScreenVisibility.compute(
+          isLoggedIn: true,
+          shopState: _shopStateFrom(snapshot),
+        );
+
+        if (visibility.showLoading) {
           return const Center(child: CircularProgressIndicator());
         }
 
-        final shopRow = snapshot.data;
-        final shopId = shopRow != null ? shopRow['id'] as int? : null;
+        if (visibility.showError) {
+          return _buildErrorState(snapshot.error);
+        }
+
+        final shop = snapshot.data;
+        final shopId = shop?.id;
 
         return ListView(
           padding: const EdgeInsets.all(20),
@@ -151,28 +292,30 @@ class _SellScreenState extends State<SellScreen> {
               style: TextStyle(color: AppColors.textSecondary),
             ),
             const SizedBox(height: 20),
-            if (shopId != null)
+            if (visibility.showMyShop)
               _SellTile(
                 icon: Icons.storefront,
                 title: 'Mon commerce',
                 subtitle: 'Consulter et gérer votre commerce',
-                onTap: () => _open(context, ShopDetailScreen(shopId: shopId)),
+                onTap: () => _open(context, ShopDetailScreen(shopId: shopId!)),
               )
-            else
+            else if (visibility.showCreateShop)
               _SellTile(
                 icon: Icons.add_business_outlined,
                 title: 'Créer mon commerce',
                 subtitle: 'Ouvrir votre commerce sur la marketplace',
                 onTap: () => _open(context, const ShopFormScreen()),
               ),
-            const SizedBox(height: 12),
-            _SellTile(
-              icon: Icons.inventory_2_outlined,
-              title: 'Mes produits',
-              subtitle: 'Consulter et gérer vos produits',
-              onTap: () => _open(context, const ProductListScreen()),
-            ),
-            if (shopId != null) ...[
+            if (visibility.showMyProducts) ...[
+              const SizedBox(height: 12),
+              _SellTile(
+                icon: Icons.inventory_2_outlined,
+                title: 'Mes produits',
+                subtitle: 'Consulter et gérer vos produits',
+                onTap: () => _open(context, const ProductListScreen()),
+              ),
+            ],
+            if (visibility.showReceivedOrders) ...[
               const SizedBox(height: 12),
               _SellTile(
                 icon: Icons.receipt_long_outlined,
@@ -181,16 +324,46 @@ class _SellScreenState extends State<SellScreen> {
                 onTap: () => _open(context, const ShopOrderListScreen()),
               ),
             ],
-            const SizedBox(height: 12),
-            _SellTile(
-              icon: Icons.add_circle_outline,
-              title: 'Ajouter un produit',
-              subtitle: 'Créer un nouveau produit',
-              onTap: () => _open(context, const ProductFormScreen()),
-            ),
+            if (visibility.showAddProduct) ...[
+              const SizedBox(height: 12),
+              _SellTile(
+                icon: Icons.add_circle_outline,
+                title: 'Ajouter un produit',
+                subtitle: 'Créer un nouveau produit',
+                onTap: () => _open(context, const ProductFormScreen()),
+              ),
+            ],
           ],
         );
       },
+    );
+  }
+
+  Widget _buildErrorState(Object? error) {
+    final message = error is ApiException
+        ? error.message
+        : 'Impossible de charger les informations de votre commerce.';
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.error_outline, size: 48, color: AppColors.danger),
+            const SizedBox(height: 12),
+            Text(
+              message,
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 16),
+            ElevatedButton(
+              onPressed: () => setState(_refreshShop),
+              child: const Text('Réessayer'),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

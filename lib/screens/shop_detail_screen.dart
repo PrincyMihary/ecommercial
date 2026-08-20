@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 
-import '../database/database_helper.dart';
 import '../models/product.dart';
 import '../models/shop.dart';
+import '../repositories/product_repository.dart';
+import '../repositories/shop_repository.dart';
+import '../services/api_client.dart';
 import '../services/auth_service.dart';
 import '../services/image_storage_service.dart';
 import '../theme/app_theme.dart';
@@ -37,6 +39,9 @@ class ShopDetailScreen extends StatefulWidget {
 }
 
 class _ShopDetailScreenState extends State<ShopDetailScreen> {
+  final ShopRepository _shopRepository = ShopRepository();
+  final ProductRepository _productRepository = ProductRepository();
+
   late Future<_ShopDetailData?> _future;
   bool _isDeleting = false;
 
@@ -46,13 +51,19 @@ class _ShopDetailScreenState extends State<ShopDetailScreen> {
     _future = _load();
   }
 
+  /// `GET /shops/:id` répond 404 (`ApiException`) si le commerce
+  /// n'existe pas ; on traduit ce cas en `null`, comme avec
+  /// `DatabaseHelper.getShopById` auparavant.
   Future<_ShopDetailData?> _load() async {
-    final shopMap = await DatabaseHelper.instance.getShopById(widget.shopId);
-    if (shopMap == null) return null;
+    Shop shop;
+    try {
+      shop = await _shopRepository.getById(widget.shopId);
+    } on ApiException catch (e) {
+      if (e.statusCode == 404) return null;
+      rethrow;
+    }
 
-    final shop = Shop.fromMap(shopMap);
-    final productRows = await DatabaseHelper.instance.getProductsByShop(widget.shopId);
-    final products = productRows.map((row) => Product.fromMap(row)).toList();
+    final products = await _productRepository.getByShop(widget.shopId);
 
     return _ShopDetailData(shop: shop, products: products);
   }
@@ -156,16 +167,15 @@ class _ShopDetailScreenState extends State<ShopDetailScreen> {
 
     setState(() => _isDeleting = true);
     try {
-      await DatabaseHelper.instance.assertShopOwnership(user.id, shop.id!);
-
-      if (productCount > 0) {
-        await DatabaseHelper.instance.deleteShopCascade(shop.id!);
-      } else {
-        await DatabaseHelper.instance.deleteShop(shop.id!);
-      }
+      // L'ownership (et la suppression en cascade des produits du
+      // commerce) est désormais entièrement vérifiée/appliquée côté
+      // backend (`assertShopOwnership` + cascade serveur) : un seul
+      // appel REST couvre les deux anciens cas SQLite
+      // (`deleteShop`/`deleteShopCascade`).
+      await _shopRepository.delete(shop.id!);
 
       // Les fichiers ne sont supprimés qu'après confirmation que la
-      // suppression SQLite a réussi (sinon on serait passé par le
+      // suppression REST a réussi (sinon on serait passé par le
       // catch ci-dessous avant d'atteindre ces lignes).
       for (final product in products) {
         await ImageStorageService.instance.deleteImage(product.image);
@@ -174,21 +184,45 @@ class _ShopDetailScreenState extends State<ShopDetailScreen> {
 
       if (!mounted) return;
       Navigator.pop(context, true);
-    } on BlockingOrdersException catch (e) {
+    } on ApiException catch (e) {
       if (!mounted) return;
-      setState(() => _isDeleting = false);
-      await Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (_) => BlockingOrdersScreen(
-            title: 'Suppression impossible',
-            explanation:
-            'Impossible de supprimer « ${shop.name} ». ${e.message}',
-            orders: e.orders,
-            shopId: shop.id,
-          ),
-        ),
-      );
+      if (e.statusCode == 409) {
+        // Le backend refuse (409) si ce commerce apparaît dans des
+        // commandes non finalisées, avec le même message que
+        // l'ancienne `BlockingOrdersException`. Contrairement à
+        // celle-ci, l'exception REST ne transporte pas la liste des
+        // commandes concernées : on la récupère explicitement via
+        // `GET /shops/:id/blocking-orders` (même DTO `Order` que la
+        // table locale `orders`, voir `Order.toMap`), pour réutiliser
+        // [BlockingOrdersScreen] sans le modifier.
+        setState(() => _isDeleting = false);
+        try {
+          final blockingOrders = await _shopRepository.getBlockingOrders(shop.id!);
+          if (!mounted) return;
+          await Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => BlockingOrdersScreen(
+                title: 'Suppression impossible',
+                explanation:
+                'Impossible de supprimer « ${shop.name} ». ${e.message}',
+                orders: blockingOrders.map((o) => o.toMap()).toList(),
+                shopId: shop.id,
+              ),
+            ),
+          );
+        } catch (_) {
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(e.message)),
+          );
+        }
+      } else {
+        setState(() => _isDeleting = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Erreur lors de la suppression : ${e.message}')),
+        );
+      }
     } catch (e) {
       if (!mounted) return;
       setState(() => _isDeleting = false);

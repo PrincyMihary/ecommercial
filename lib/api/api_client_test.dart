@@ -10,7 +10,7 @@ void main() {
 
   setUp(() {
     client = ApiClient.instance;
-    client.configure(baseUrl: 'http://10.0.2.2:3000');
+    client.configure(baseUrl: 'http://10.99.162.185:3000');
     client.clearToken();
   });
 

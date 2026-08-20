@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 
 import '../constants/shop_categories.dart';
-import '../database/database_helper.dart';
+import '../database/database_helper.dart' show AuthException;
 import '../models/shop.dart';
+import '../repositories/shop_repository.dart';
+import '../services/api_client.dart';
 import '../services/auth_service.dart';
 import '../services/image_storage_service.dart';
 import '../theme/app_theme.dart';
@@ -47,6 +49,8 @@ class ShopFormScreen extends StatefulWidget {
 }
 
 class _ShopFormScreenState extends State<ShopFormScreen> {
+  final ShopRepository _shopRepository = ShopRepository();
+
   final _formKey = GlobalKey<FormState>();
 
   late final TextEditingController _nameController;
@@ -111,12 +115,17 @@ class _ShopFormScreenState extends State<ShopFormScreen> {
     }
 
     // Création : réservée à un utilisateur sans commerce existant.
-    final existing = await DatabaseHelper.instance.getShopByOwnerId(user.id);
-    if (existing != null) {
-      _existingShopId = existing['id'] as int?;
+    // `GET /shops/me` répond 404 (`ApiException`) si l'utilisateur n'a
+    // pas encore de commerce ; ce cas se traduit ici par `allowed`,
+    // comme le `null` de l'ancien `getShopByOwnerId`.
+    try {
+      final existing = await _shopRepository.getMine();
+      _existingShopId = existing.id;
       return _ShopAccess.hasShopElsewhere;
+    } on ApiException catch (e) {
+      if (e.statusCode == 404) return _ShopAccess.allowed;
+      rethrow;
     }
-    return _ShopAccess.allowed;
   }
 
   List<DropdownMenuItem<String>> _categoryItems() {
@@ -173,16 +182,16 @@ class _ShopFormScreenState extends State<ShopFormScreen> {
     final imageChanged = _currentImagePath != _originalImagePath;
     final finalImagePath = _currentImagePath ?? '';
 
-    final data = <String, dynamic>{
-      'name': _nameController.text.trim(),
-      'description': _descriptionController.text.trim(),
-      'address': _hasPhysicalLocation ? _selectedAddress : null,
-      'latitude': _hasPhysicalLocation ? _selectedLatitude : null,
-      'longitude': _hasPhysicalLocation ? _selectedLongitude : null,
-      'google_place_id': _hasPhysicalLocation ? _selectedPlaceId : null,
-      'category': _selectedCategory ?? '',
-      'image': finalImagePath,
-    };
+    final shopData = Shop(
+      name: _nameController.text.trim(),
+      description: _descriptionController.text.trim(),
+      address: _hasPhysicalLocation ? _selectedAddress : null,
+      latitude: _hasPhysicalLocation ? _selectedLatitude : null,
+      longitude: _hasPhysicalLocation ? _selectedLongitude : null,
+      googlePlaceId: _hasPhysicalLocation ? _selectedPlaceId : null,
+      category: _selectedCategory ?? '',
+      image: finalImagePath,
+    );
 
     try {
       if (_isEditing && widget.shop?.id != null) {
@@ -190,11 +199,11 @@ class _ShopFormScreenState extends State<ShopFormScreen> {
         if (user == null) {
           throw const AuthException('Vous devez être connecté.');
         }
-        // Vérification côté logique d'accès aux données : même si
-        // l'écran ne devrait être atteint que par le propriétaire,
-        // on revérifie ici avant l'update (défense en profondeur).
-        await DatabaseHelper.instance.assertShopOwnership(user.id, widget.shop!.id!);
-        await DatabaseHelper.instance.updateShop(widget.shop!.id!, data);
+        // L'ownership est revérifiée côté backend
+        // (`assertShopOwnership`, réponse 403 sinon) : plus besoin
+        // d'un appel dédié avant l'update, même défense en
+        // profondeur qu'auparavant, désormais assurée par le serveur.
+        await _shopRepository.update(widget.shop!.id!, shopData);
       } else {
         final user = AuthService.instance.currentUser;
         if (user == null) {
@@ -202,7 +211,7 @@ class _ShopFormScreenState extends State<ShopFormScreen> {
             'Vous devez être connecté pour créer un commerce.',
           );
         }
-        await DatabaseHelper.instance.createShopForOwner(user.id, data);
+        await _shopRepository.create(shopData);
       }
 
       if (imageChanged && _originalImagePath != null) {

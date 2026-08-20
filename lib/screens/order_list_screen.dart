@@ -1,13 +1,23 @@
 import 'package:flutter/material.dart';
 
-import '../database/database_helper.dart';
+import '../models/order.dart';
 import '../models/order_status.dart';
+import '../repositories/order_repository.dart';
 import '../theme/app_theme.dart';
 import '../utils/formatters.dart';
 import 'order_detail_screen.dart';
 
-/// Écran "Mes commandes" : liste de toutes les commandes enregistrées
-/// localement, les plus récentes en premier.
+/// Écran "Mes commandes" : liste des commandes de l'utilisateur
+/// authentifié, les plus récentes en premier.
+///
+/// Migration REST : `OrderRepository.myOrders()` (`GET /orders`) ne
+/// renvoie QUE les commandes de l'appelant authentifié — le backend
+/// n'expose intentionnellement aucune route "toutes les commandes"
+/// sans filtre (voir `OrderRepository`, doc de tête). Cet écran
+/// affichait auparavant `getOrdersWithItemCount()`, soit TOUTES les
+/// commandes SQLite (tous utilisateurs confondus) ; le scoping "mes
+/// commandes" est donc plus strict qu'avant, ce qui correspond au
+/// titre de l'écran et au comportement attendu d'un "Mes commandes".
 class OrderListScreen extends StatefulWidget {
   const OrderListScreen({super.key});
 
@@ -16,7 +26,9 @@ class OrderListScreen extends StatefulWidget {
 }
 
 class _OrderListScreenState extends State<OrderListScreen> {
-  late Future<List<Map<String, dynamic>>> _ordersFuture;
+  final OrderRepository _orderRepository = OrderRepository();
+
+  late Future<List<Order>> _ordersFuture;
 
   @override
   void initState() {
@@ -24,8 +36,8 @@ class _OrderListScreenState extends State<OrderListScreen> {
     _ordersFuture = _load();
   }
 
-  Future<List<Map<String, dynamic>>> _load() {
-    return DatabaseHelper.instance.getOrdersWithItemCount();
+  Future<List<Order>> _load() {
+    return _orderRepository.myOrders();
   }
 
   Future<void> _refresh() async {
@@ -39,7 +51,7 @@ class _OrderListScreenState extends State<OrderListScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Mes commandes')),
-      body: FutureBuilder<List<Map<String, dynamic>>>(
+      body: FutureBuilder<List<Order>>(
         future: _ordersFuture,
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {
@@ -71,17 +83,14 @@ class _OrderListScreenState extends State<OrderListScreen> {
 }
 
 class _OrderTile extends StatelessWidget {
-  final Map<String, dynamic> order;
+  final Order order;
 
   const _OrderTile({required this.order});
 
   @override
   Widget build(BuildContext context) {
-    final id = order['id'] as int;
-    final total = (order['total'] as num?)?.toDouble() ?? 0.0;
-    final status = order['status'] as String? ?? '';
-    final createdAt = order['created_at'] as String? ?? '';
-    final itemCount = (order['item_count'] as num?)?.toInt() ?? 0;
+    final id = order.id!;
+    final itemCount = order.itemCount ?? 0;
 
     return InkWell(
       borderRadius: BorderRadius.circular(16),
@@ -104,11 +113,11 @@ class _OrderTile extends StatelessWidget {
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 Text('Commande #$id', style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
-                _StatusBadge(status: status),
+                _StatusBadge(status: order.status),
               ],
             ),
             const SizedBox(height: 6),
-            Text(formatOrderDate(createdAt), style: const TextStyle(color: AppColors.textSecondary, fontSize: 12)),
+            Text(formatOrderDate(order.createdAt), style: const TextStyle(color: AppColors.textSecondary, fontSize: 12)),
             const SizedBox(height: 10),
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -118,7 +127,7 @@ class _OrderTile extends StatelessWidget {
                   style: const TextStyle(color: AppColors.textSecondary, fontSize: 13),
                 ),
                 Text(
-                  formatPriceAr(total),
+                  formatPriceAr(order.total),
                   style: const TextStyle(fontWeight: FontWeight.w700, color: AppColors.accentDark),
                 ),
               ],

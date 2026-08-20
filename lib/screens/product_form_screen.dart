@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 
-import '../database/database_helper.dart';
 import '../models/product.dart';
+import '../repositories/product_repository.dart';
+import '../repositories/shop_repository.dart';
+import '../services/api_client.dart';
 import '../services/auth_service.dart';
 import '../services/image_storage_service.dart';
 import '../services/model_3d_storage_service.dart';
@@ -25,9 +27,9 @@ enum _ProductAccess { guest, noShop, wrongShop, allowed }
 ///
 /// Le commerce n'est PLUS un choix libre dans le formulaire : il est
 /// résolu automatiquement à partir de l'utilisateur connecté
-/// (AuthService + DatabaseHelper.getShopByOwnerId). Un utilisateur ne
-/// peut ni créer un produit pour un autre commerce, ni éditer un
-/// produit qui n'appartient pas à son propre commerce.
+/// (AuthService + ShopRepository.getMine). Un utilisateur ne peut ni
+/// créer un produit pour un autre commerce, ni éditer un produit qui
+/// n'appartient pas à son propre commerce.
 class ProductFormScreen extends StatefulWidget {
   final Product? product;
 
@@ -38,6 +40,9 @@ class ProductFormScreen extends StatefulWidget {
 }
 
 class _ProductFormScreenState extends State<ProductFormScreen> {
+  final ProductRepository _productRepository = ProductRepository();
+  final ShopRepository _shopRepository = ShopRepository();
+
   final _formKey = GlobalKey<FormState>();
 
   late final TextEditingController _nameController;
@@ -92,11 +97,17 @@ class _ProductFormScreenState extends State<ProductFormScreen> {
     final user = AuthService.instance.currentUser;
     if (user == null) return _ProductAccess.guest;
 
-    final shop = await DatabaseHelper.instance.getShopByOwnerId(user.id);
-    if (shop == null) return _ProductAccess.noShop;
-
-    _myShopId = shop['id'] as int;
-    _myShopName = shop['name'] as String? ?? '';
+    // `GET /shops/me` répond 404 (`ApiException`) si l'utilisateur n'a
+    // pas encore de commerce ; ce cas se traduit ici par `noShop`,
+    // comme le `null` de l'ancien `getShopByOwnerId`.
+    try {
+      final shop = await _shopRepository.getMine();
+      _myShopId = shop.id;
+      _myShopName = shop.name;
+    } on ApiException catch (e) {
+      if (e.statusCode == 404) return _ProductAccess.noShop;
+      rethrow;
+    }
 
     if (_isEditing && widget.product!.shopId != _myShopId) {
       return _ProductAccess.wrongShop;
@@ -158,35 +169,35 @@ class _ProductFormScreenState extends State<ProductFormScreen> {
     final modelChanged = _currentModelPath != _originalModelPath;
     final finalModelPath = _currentModelPath;
 
-    // Pas de 'shop_id' choisi librement ici : il est résolu par
-    // DatabaseHelper à partir de l'utilisateur connecté (création) ou
-    // déjà vérifié comme correct via _accessFuture (édition).
-    final data = <String, dynamic>{
-      'name': _nameController.text.trim(),
-      'description': _descriptionController.text.trim(),
-      'price': double.parse(_priceController.text.trim().replaceAll(',', '.')),
-      'stock': int.parse(_stockController.text.trim()),
-      'category': _selectedCategory ?? '',
-      'image': finalImagePath,
-      'model_3d': finalModelPath,
-    };
+    // Pas de shopId choisi librement ici : il est résolu côté backend
+    // à partir de l'utilisateur connecté (création, voir
+    // `Product.toApiJson`) ou déjà vérifié comme correct via
+    // _accessFuture (édition). `shopId` n'a ici qu'une valeur locale
+    // de confort (`_myShopId ?? 0`) : jamais sérialisée vers l'API.
+    final productData = Product(
+      shopId: _myShopId ?? widget.product?.shopId ?? 0,
+      name: _nameController.text.trim(),
+      description: _descriptionController.text.trim(),
+      price: double.parse(_priceController.text.trim().replaceAll(',', '.')),
+      stock: int.parse(_stockController.text.trim()),
+      category: _selectedCategory ?? '',
+      image: finalImagePath,
+      model3d: finalModelPath,
+    );
 
     try {
       if (_isEditing && widget.product?.id != null) {
-        // Vérification + écriture regroupées dans une seule méthode
-        // dédiée : la propriété est revérifiée côté DatabaseHelper
-        // (défense en profondeur, indépendante de _accessFuture),
-        // sans dépendre de deux appels séparés à enchaîner correctement.
-        await DatabaseHelper.instance.updateProductForOwner(
-          user.id,
-          widget.product!.id!,
-          data,
-        );
+        // L'ownership est revérifiée côté backend
+        // (`assertProductOwnership`, réponse 403 sinon) : même
+        // défense en profondeur qu'auparavant, désormais assurée par
+        // le serveur plutôt que par un appel dédié côté client.
+        await _productRepository.update(widget.product!.id!, productData);
       } else {
-        // Résout le commerce depuis l'utilisateur connecté, ignore
-        // tout shop_id qui aurait pu être fourni : impossible de
-        // créer un produit dans le commerce de quelqu'un d'autre.
-        await DatabaseHelper.instance.createProductForOwner(user.id, data);
+        // Résout le commerce depuis l'utilisateur connecté côté
+        // backend, ignore tout shopId qui aurait pu être fourni :
+        // impossible de créer un produit dans le commerce de
+        // quelqu'un d'autre.
+        await _productRepository.create(productData);
       }
 
       if (imageChanged && _originalImagePath != null) {

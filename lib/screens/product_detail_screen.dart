@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 
-import '../database/database_helper.dart';
 import '../models/product.dart';
 import '../models/shop.dart';
+import '../repositories/product_repository.dart';
+import '../repositories/shop_repository.dart';
+import '../services/api_client.dart';
 import '../services/cart_service.dart';
 import '../services/image_storage_service.dart';
 import '../theme/app_theme.dart';
@@ -32,6 +34,9 @@ class ProductDetailScreen extends StatefulWidget {
 }
 
 class _ProductDetailScreenState extends State<ProductDetailScreen> {
+  final ProductRepository _productRepository = ProductRepository();
+  final ShopRepository _shopRepository = ShopRepository();
+
   late Future<_ProductDetailData?> _future;
   bool _isDeleting = false;
 
@@ -45,16 +50,27 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
     _future = _load();
   }
 
+  /// `GET /products/:id` répond 404 (`ApiException`) si le produit
+  /// n'existe pas ; on traduit ce cas en `null`, comme avec
+  /// `DatabaseHelper.getProductById` auparavant. Le commerce vendeur
+  /// est chargé de la même façon (404 -> `shop` reste `null`, le
+  /// produit reste affichable sans lien vers son commerce).
   Future<_ProductDetailData?> _load() async {
-    final productMap = await DatabaseHelper.instance.getProductById(widget.productId);
-    if (productMap == null) return null;
-
-    final product = Product.fromMap(productMap);
-    Shop? shop;
-    final shopMap = await DatabaseHelper.instance.getShopById(product.shopId);
-    if (shopMap != null) {
-      shop = Shop.fromMap(shopMap);
+    Product product;
+    try {
+      product = await _productRepository.getById(widget.productId);
+    } on ApiException catch (e) {
+      if (e.statusCode == 404) return null;
+      rethrow;
     }
+
+    Shop? shop;
+    try {
+      shop = await _shopRepository.getById(product.shopId);
+    } on ApiException catch (e) {
+      if (e.statusCode != 404) rethrow;
+    }
+
     return _ProductDetailData(product: product, shop: shop);
   }
 
@@ -105,30 +121,57 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
 
     setState(() => _isDeleting = true);
     try {
-      await DatabaseHelper.instance.deleteProductForOwner(user.id, product.id!);
+      // L'ownership est vérifiée côté backend
+      // (`assertProductOwnership`, réponse 403 sinon).
+      await _productRepository.delete(product.id!);
 
       await ImageStorageService.instance.deleteImage(product.image);
 
       if (!mounted) return;
       Navigator.pop(context, true);
-    } on BlockingOrdersException catch (e) {
-      // Étape 4 : au lieu d'un message d'erreur opaque, on ouvre un
-      // écran listant précisément les commandes qui bloquent la
-      // suppression, avec un chemin direct vers leur détail.
+    } on ApiException catch (e) {
       if (!mounted) return;
-      setState(() => _isDeleting = false);
-      await Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (_) => BlockingOrdersScreen(
-            title: 'Suppression impossible',
-            explanation:
-            'Impossible de supprimer « ${product.name} ». ${e.message}',
-            orders: e.orders,
-            productId: product.id,
-          ),
-        ),
-      );
+      if (e.statusCode == 409) {
+        // Étape 4 : au lieu d'un message d'erreur opaque, on ouvre un
+        // écran listant précisément les commandes qui bloquent la
+        // suppression, avec un chemin direct vers leur détail.
+        //
+        // Le backend refuse (409) mais l'exception REST ne transporte
+        // pas la liste des commandes concernées (contrairement à
+        // l'ancienne `BlockingOrdersException`) : on la récupère
+        // explicitement via `GET /products/:id/blocking-orders` (même
+        // DTO `Order` que la table locale `orders`, voir
+        // `Order.toMap`), pour réutiliser [BlockingOrdersScreen] sans
+        // le modifier.
+        setState(() => _isDeleting = false);
+        try {
+          final blockingOrders =
+          await _productRepository.getBlockingOrders(product.id!);
+          if (!mounted) return;
+          await Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => BlockingOrdersScreen(
+                title: 'Suppression impossible',
+                explanation:
+                'Impossible de supprimer « ${product.name} ». ${e.message}',
+                orders: blockingOrders.map((o) => o.toMap()).toList(),
+                productId: product.id,
+              ),
+            ),
+          );
+        } catch (_) {
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(e.message)),
+          );
+        }
+      } else {
+        setState(() => _isDeleting = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Erreur lors de la suppression : ${e.message}')),
+        );
+      }
     } catch (e) {
       if (!mounted) return;
       setState(() => _isDeleting = false);
@@ -146,11 +189,11 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
   }
 
   void _openArView(Product product) {
-        Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => ArViewScreen(product: product)),
-            );
-      }
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => ArViewScreen(product: product)),
+    );
+  }
 
   /// Ajoute le produit au panier via [CartService], en respectant le
   /// stock disponible. Affiche un message adapté selon que la quantité

@@ -28,7 +28,7 @@ function issueToken(userId: number, email: string): string {
 
 export async function register(req: Request, res: Response) {
   const body = req.body ?? {};
-  const fullName = String(body.fullName ?? '').trim();
+  const fullName = String(body.fullName ?? body.fullname ??  body.full_name ?? '').trim();
   const normalizedEmail = String(body.email ?? '').trim().toLowerCase();
   const rawPhone = body.phone === undefined || body.phone === null ? '' : String(body.phone).trim();
   const password = String(body.password ?? '');

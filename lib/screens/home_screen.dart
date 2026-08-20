@@ -1,15 +1,15 @@
 import 'package:flutter/material.dart';
 
-import '../database/database_helper.dart';
 import '../models/product.dart';
+import '../repositories/product_repository.dart';
 import '../theme/app_theme.dart';
 import '../widgets/product_card.dart';
 import 'product_detail_screen.dart';
 
 /// Écran d'accueil.
 ///
-/// Affiche les produits depuis SQLite, filtrés par la recherche texte
-/// et/ou la catégorie sélectionnée (voir [DatabaseHelper.searchProducts]).
+/// Affiche les produits depuis l'API REST, filtrés par la recherche
+/// texte et/ou la catégorie sélectionnée (voir [ProductRepository.search]).
 /// Chaque carte ouvre [ProductDetailScreen] ; la liste se rafraîchit
 /// automatiquement au retour si une modification a eu lieu.
 ///
@@ -29,6 +29,8 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
+  final ProductRepository _productRepository = ProductRepository();
+
   late Future<List<Product>> _productsFuture;
 
   /// Créés une seule fois pour toute la durée de vie de l'écran.
@@ -63,15 +65,14 @@ class _HomeScreenState extends State<HomeScreen> {
     super.dispose();
   }
 
-  /// Interroge SQLite avec le texte de recherche courant et la
-  /// catégorie sélectionnée. Le filtrage a lieu entièrement côté base
-  /// (voir [DatabaseHelper.searchProducts]), jamais en mémoire ici.
-  Future<List<Product>> _search() async {
-    final rows = await DatabaseHelper.instance.searchProducts(
+  /// Interroge l'API REST avec le texte de recherche courant et la
+  /// catégorie sélectionnée. Le filtrage a lieu entièrement côté
+  /// backend (voir [ProductRepository.search]), jamais en mémoire ici.
+  Future<List<Product>> _search() {
+    return _productRepository.search(
       query: _searchController.text,
       category: _selectedCategory,
     );
-    return rows.map((row) => Product.fromMap(row)).toList();
   }
 
   /// Ne touche ni au controller ni au focusNode : seule la Future de
@@ -347,7 +348,7 @@ class _HomeScreenState extends State<HomeScreen> {
         child: Text(
           _isFiltering
               ? 'Aucun résultat pour cette recherche.'
-              : 'Aucun produit trouvé dans la base locale.',
+              : 'Aucun produit trouvé.',
           textAlign: TextAlign.center,
           style: const TextStyle(color: AppColors.textSecondary),
         ),

@@ -1,49 +1,29 @@
 import 'package:flutter/material.dart';
 
-import '../database/database_helper.dart';
 import '../models/order.dart';
 import '../models/order_item.dart';
 import '../models/order_status.dart';
+import '../repositories/order_repository.dart';
+import '../services/api_client.dart';
 import '../services/auth_service.dart';
 import '../services/mock_payment_service.dart';
 import '../theme/app_theme.dart';
 import '../utils/formatters.dart';
 
-class _OrderDetailData {
-  final Order order;
-  final List<OrderItem> allItems;
-  final int? myShopId;
-  final bool isBuyer;
-
-  const _OrderDetailData({
-    required this.order,
-    required this.allItems,
-    required this.myShopId,
-    required this.isBuyer,
-  });
-
-  List<OrderItem> get myShopItems =>
-      myShopId == null ? const [] : allItems.where((i) => i.shopId == myShopId).toList();
-
-  bool get isMerchantHere => myShopItems.isNotEmpty;
-
-  bool get hasAccess => isBuyer || isMerchantHere;
-
-  double get myShopTotal =>
-      myShopItems.fold(0.0, (sum, item) => sum + item.subtotal);
-}
-
 /// Détail d'une commande.
 ///
-/// Étape 4 : deux vues possibles, jamais mélangées :
-/// - CLIENT (acheteur) : toutes les lignes, total complet — inchangé.
-/// - COMMERÇANT (au moins une ligne de son commerce dans cette
-///   commande) : uniquement SES lignes, son sous-total, et des
-///   actions de gestion (avancer le statut, rembourser). Si le
-///   commerçant n'est PAS l'acheteur, il ne voit QUE sa portion (pas
-///   les lignes des autres commerces, pas le total global).
-/// Un utilisateur qui n'est ni l'acheteur ni concerné en tant que
-/// commerçant (y compris un visiteur) n'a accès à rien.
+/// Migration REST : `OrderRepository.getDetail()` (`GET /orders/:id`)
+/// renvoie déjà `items` filtrés selon le rôle de l'appelant, ainsi
+/// que les booléens `isBuyer`/`isMerchant` — voir [OrderDetail] dans
+/// `order_repository.dart`. La règle d'accès (acheteur voit tout ;
+/// commerçant ne voit que ses propres lignes ; ni l'un ni l'autre =
+/// refus) est désormais appliquée CÔTÉ BACKEND avant l'envoi des
+/// données : cet écran ne recalcule plus rien lui-même (l'ancienne
+/// classe locale `_OrderDetailData`, qui recroisait `allItems` avec
+/// `myShopId` résolu via `getShopByOwnerId`, a été supprimée).
+///
+/// Un accès refusé remonte sous forme d'`ApiException` avec
+/// `statusCode == 403` (distinct de `404`, commande introuvable).
 class OrderDetailScreen extends StatefulWidget {
   final int orderId;
 
@@ -54,7 +34,9 @@ class OrderDetailScreen extends StatefulWidget {
 }
 
 class _OrderDetailScreenState extends State<OrderDetailScreen> {
-  late Future<_OrderDetailData?> _future;
+  final OrderRepository _orderRepository = OrderRepository();
+
+  late Future<OrderDetail> _future;
   bool _isUpdating = false;
 
   @override
@@ -63,31 +45,8 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
     _future = _load();
   }
 
-  Future<_OrderDetailData?> _load() async {
-    final db = DatabaseHelper.instance;
-    final orderMap = await db.getOrderById(widget.orderId);
-    if (orderMap == null) return null;
-
-    final order = Order.fromMap(orderMap);
-    final itemMaps = await db.getOrderItems(widget.orderId);
-    final allItems = itemMaps.map(OrderItem.fromMap).toList();
-
-    final currentUserId = AuthService.instance.currentUser?.id;
-    int? myShopId;
-    if (currentUserId != null) {
-      final myShop = await db.getShopByOwnerId(currentUserId);
-      myShopId = myShop?['id'] as int?;
-    }
-    final isBuyer = currentUserId != null &&
-        order.userId != null &&
-        order.userId == currentUserId;
-
-    return _OrderDetailData(
-      order: order,
-      allItems: allItems,
-      myShopId: myShopId,
-      isBuyer: isBuyer,
-    );
+  Future<OrderDetail> _load() {
+    return _orderRepository.getDetail(widget.orderId);
   }
 
   Future<void> _refresh() async {
@@ -115,12 +74,17 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
 
     setState(() => _isUpdating = true);
     try {
-      await DatabaseHelper.instance.advanceOrderStatusForShop(
-        user.id,
-        widget.orderId,
-        newStatus,
-      );
+      // Le backend applique `assertShopOwnership` puis
+      // `OrderStatus.canTransition` avant d'accepter la transition —
+      // mêmes règles, mêmes messages, que l'ancien
+      // `DatabaseHelper.advanceOrderStatusForShop`.
+      await _orderRepository.advanceStatus(widget.orderId, newStatus);
       await _refresh();
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Erreur : ${e.message}')),
+      );
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -158,16 +122,24 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
     setState(() => _isUpdating = true);
     try {
       // Réutilise le système de paiement mocké existant (symétrique
-      // de MockPaymentService.pay), pas un nouveau système.
+      // de MockPaymentService.pay), pas un nouveau système. Le
+      // remboursement effectif (changement de statut + réapprovisionnement
+      // du stock, dans une même transaction) est désormais côté
+      // backend, voir `OrderRepository.refund`.
       await MockPaymentService.refund(
         methodId: order.paymentMethod ?? '',
         detail: 'Remboursement commande #${order.id}',
       );
-      await DatabaseHelper.instance.refundOrderForShop(user.id, widget.orderId);
+      await _orderRepository.refund(widget.orderId);
       await _refresh();
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Remboursement effectué.')),
+      );
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Erreur : ${e.message}')),
       );
     } catch (e) {
       if (!mounted) return;
@@ -183,22 +155,27 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: Text('Commande #${widget.orderId}')),
-      body: FutureBuilder<_OrderDetailData?>(
+      body: FutureBuilder<OrderDetail>(
         future: _future,
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {
             return const Center(child: CircularProgressIndicator());
           }
+
           if (snapshot.hasError) {
+            final error = snapshot.error;
+            if (error is ApiException && error.statusCode == 403) {
+              return const _AccessDeniedState();
+            }
+            if (error is ApiException && error.statusCode == 404) {
+              return const Center(child: Text('Cette commande est introuvable.'));
+            }
             return _ErrorState(onRetry: _refresh);
           }
 
           final data = snapshot.data;
           if (data == null) {
             return const Center(child: Text('Cette commande est introuvable.'));
-          }
-          if (!data.hasAccess) {
-            return const _AccessDeniedState();
           }
 
           return AbsorbPointer(
@@ -210,14 +187,19 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
     );
   }
 
-  Widget _buildContent(_OrderDetailData data) {
+  Widget _buildContent(OrderDetail data) {
     final order = data.order;
+    final items = data.items;
     // Vue client complète si acheteur ; sinon vue commerçant limitée
-    // à ses propres lignes (voir C. dans l'énoncé : "voir un produit"
-    // ≠ "gérer un produit" — ici, "faire partie de la commande" ≠
-    // "voir toute la commande").
-    final displayItems = data.isBuyer ? data.allItems : data.myShopItems;
-    final displayTotal = data.isBuyer ? order.total : data.myShopTotal;
+    // à ses propres lignes — `items` est déjà le bon sous-ensemble,
+    // renvoyé tel quel par le backend (voir doc de classe). Le total
+    // affiché à un commerçant est calculé localement à partir de ces
+    // lignes déjà filtrées (aucune règle d'accès recalculée ici, à
+    // la différence de l'ancienne `myShopTotal`, qui recroisait
+    // `allItems` avec un `myShopId` résolu côté client).
+    final displayTotal = data.isBuyer
+        ? order.total
+        : items.fold<double>(0.0, (sum, item) => sum + item.subtotal);
 
     return ListView(
       padding: const EdgeInsets.all(20),
@@ -237,7 +219,7 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
         else
           _ProgressTracker(status: order.status),
         const SizedBox(height: 24),
-        if (!data.isBuyer && data.isMerchantHere)
+        if (!data.isBuyer && data.isMerchant)
           Container(
             margin: const EdgeInsets.only(bottom: 16),
             padding: const EdgeInsets.all(12),
@@ -255,7 +237,7 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
           style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15),
         ),
         const SizedBox(height: 12),
-        ...displayItems.map((item) => _OrderItemTile(item: item, showShop: data.isBuyer)),
+        ...items.map((item) => _OrderItemTile(item: item, showShop: data.isBuyer)),
         const Divider(height: 32),
         if (data.isBuyer)
           _SummaryRow(label: 'Moyen de paiement', value: PaymentMethodId.label(order.paymentMethod ?? '')),
@@ -265,7 +247,7 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
           value: formatPriceAr(displayTotal),
           emphasize: true,
         ),
-        if (data.isMerchantHere) ...[
+        if (data.isMerchant) ...[
           const SizedBox(height: 28),
           const Text('Gestion commerçant', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
           const SizedBox(height: 12),

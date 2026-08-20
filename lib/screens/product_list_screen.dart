@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 
-import '../database/database_helper.dart';
 import '../models/product.dart';
+import '../repositories/product_repository.dart';
+import '../repositories/shop_repository.dart';
+import '../services/api_client.dart';
 import '../services/auth_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/product_card.dart';
@@ -29,6 +31,9 @@ class ProductListScreen extends StatefulWidget {
 }
 
 class _ProductListScreenState extends State<ProductListScreen> {
+  final ProductRepository _productRepository = ProductRepository();
+  final ShopRepository _shopRepository = ShopRepository();
+
   late Future<List<Product>> _productsFuture;
   _MyProductsState _state = _MyProductsState.guest;
 
@@ -59,18 +64,27 @@ class _ProductListScreenState extends State<ProductListScreen> {
       return [];
     }
 
+    // "A un commerce ou non" et "produits du commerce" sont deux
+    // informations distinctes (un commerce peut avoir 0 produit) :
+    // comme avec `DatabaseHelper.getShopByOwnerId` auparavant, on
+    // vérifie explicitement l'existence du commerce plutôt que de
+    // déduire l'état à partir d'une liste de produits vide.
+    // `GET /shops/me` répond 404 (`ApiException`) si l'utilisateur n'a
+    // pas encore de commerce.
+    try {
+      await _shopRepository.getMine();
+      _state = _MyProductsState.hasShop;
+    } on ApiException catch (e) {
+      if (e.statusCode == 404) {
+        _state = _MyProductsState.noShop;
+        return [];
+      }
+      rethrow;
+    }
+
     // Requête "mes données" : toujours filtrée par propriétaire,
-    // jamais un simple getAllProducts().
-    final rows = await DatabaseHelper.instance.getProductsByOwner(user.id);
-
-    _state = rows.isEmpty ? _MyProductsState.noShop : _MyProductsState.hasShop;
-    // rows.isEmpty peut aussi signifier "a un commerce mais 0
-    // produit" : on distingue les deux cas via une vérification
-    // dédiée ci-dessous plutôt que de deviner à partir de la liste.
-    final shop = await DatabaseHelper.instance.getShopByOwnerId(user.id);
-    _state = shop == null ? _MyProductsState.noShop : _MyProductsState.hasShop;
-
-    return rows.map((row) => Product.fromMap(row)).toList();
+    // jamais un simple getAll().
+    return _productRepository.getMine();
   }
 
   Future<void> _refresh() async {

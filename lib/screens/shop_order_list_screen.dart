@@ -1,15 +1,23 @@
 import 'package:flutter/material.dart';
 
-import '../database/database_helper.dart';
+import '../models/order.dart';
 import '../models/order_status.dart';
+import '../repositories/order_repository.dart';
 import '../services/auth_service.dart';
 import '../theme/app_theme.dart';
 import '../utils/formatters.dart';
 import 'order_detail_screen.dart';
 
-/// Étape 4 : "Commandes reçues" côté COMMERÇANT — uniquement les
-/// commandes contenant au moins une ligne de SON commerce (résolu
-/// depuis `AuthService.currentUser`, jamais un shopId externe).
+/// "Commandes reçues" côté COMMERÇANT — uniquement les commandes
+/// contenant au moins une ligne de SON commerce.
+///
+/// Migration REST : `OrderRepository.ordersForMyShop()`
+/// (`GET /orders/shop`) résout le commerce du vendeur authentifié
+/// entièrement côté backend — plus besoin de connaître l'id du
+/// commerce au préalable côté client (contrairement à l'ancien
+/// `DatabaseHelper.getOrdersForShopOwner(user.id)` qui appelait
+/// d'abord `getShopByOwnerId`). Un appelant sans commerce reçoit une
+/// liste vide, comme avant.
 class ShopOrderListScreen extends StatefulWidget {
   const ShopOrderListScreen({super.key});
 
@@ -18,7 +26,9 @@ class ShopOrderListScreen extends StatefulWidget {
 }
 
 class _ShopOrderListScreenState extends State<ShopOrderListScreen> {
-  late Future<List<Map<String, dynamic>>> _ordersFuture;
+  final OrderRepository _orderRepository = OrderRepository();
+
+  late Future<List<Order>> _ordersFuture;
 
   @override
   void initState() {
@@ -26,10 +36,10 @@ class _ShopOrderListScreenState extends State<ShopOrderListScreen> {
     _ordersFuture = _load();
   }
 
-  Future<List<Map<String, dynamic>>> _load() {
+  Future<List<Order>> _load() {
     final user = AuthService.instance.currentUser;
     if (user == null) return Future.value(const []);
-    return DatabaseHelper.instance.getOrdersForShopOwner(user.id);
+    return _orderRepository.ordersForMyShop();
   }
 
   Future<void> _refresh() async {
@@ -43,7 +53,7 @@ class _ShopOrderListScreenState extends State<ShopOrderListScreen> {
       appBar: AppBar(title: const Text('Commandes reçues')),
       body: RefreshIndicator(
         onRefresh: _refresh,
-        child: FutureBuilder<List<Map<String, dynamic>>>(
+        child: FutureBuilder<List<Order>>(
           future: _ordersFuture,
           builder: (context, snapshot) {
             if (snapshot.connectionState == ConnectionState.waiting) {
@@ -87,17 +97,15 @@ class _ShopOrderListScreenState extends State<ShopOrderListScreen> {
 }
 
 class _ShopOrderTile extends StatelessWidget {
-  final Map<String, dynamic> order;
+  final Order order;
 
   const _ShopOrderTile({required this.order});
 
   @override
   Widget build(BuildContext context) {
-    final id = order['id'] as int;
-    final status = order['status'] as String? ?? '';
-    final createdAt = order['created_at'] as String? ?? '';
-    final shopItemCount = (order['shop_item_count'] as num?)?.toInt() ?? 0;
-    final shopTotal = (order['shop_total'] as num?)?.toDouble() ?? 0.0;
+    final id = order.id!;
+    final shopItemCount = order.shopItemCount ?? 0;
+    final shopTotal = order.shopTotal ?? 0.0;
 
     return InkWell(
       borderRadius: BorderRadius.circular(16),
@@ -126,14 +134,14 @@ class _ShopOrderTile extends StatelessWidget {
                     borderRadius: BorderRadius.circular(20),
                   ),
                   child: Text(
-                    OrderStatus.label(status),
+                    OrderStatus.label(order.status),
                     style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppColors.accentDark),
                   ),
                 ),
               ],
             ),
             const SizedBox(height: 6),
-            Text(formatOrderDate(createdAt), style: const TextStyle(color: AppColors.textSecondary, fontSize: 12)),
+            Text(formatOrderDate(order.createdAt), style: const TextStyle(color: AppColors.textSecondary, fontSize: 12)),
             const SizedBox(height: 10),
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,

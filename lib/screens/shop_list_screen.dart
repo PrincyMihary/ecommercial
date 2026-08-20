@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
-import '../database/database_helper.dart';
 import '../models/shop.dart';
+import '../repositories/shop_repository.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_image.dart';
 import 'shop_detail_screen.dart';
@@ -16,6 +16,8 @@ class ShopListScreen extends StatefulWidget {
 }
 
 class _ShopListScreenState extends State<ShopListScreen> {
+  final ShopRepository _shopRepository = ShopRepository();
+
   late Future<List<Shop>> _shopsFuture;
 
   @override
@@ -24,10 +26,7 @@ class _ShopListScreenState extends State<ShopListScreen> {
     _shopsFuture = _load();
   }
 
-  Future<List<Shop>> _load() async {
-    final rows = await DatabaseHelper.instance.getAllShops();
-    return rows.map((row) => Shop.fromMap(row)).toList();
-  }
+  Future<List<Shop>> _load() => _shopRepository.getAll();
 
   Future<void> _refresh() async {
     setState(() {

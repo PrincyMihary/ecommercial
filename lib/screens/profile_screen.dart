@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 
-import '../database/database_helper.dart';
 import '../models/shop.dart';
+import '../repositories/shop_repository.dart';
+import '../services/api_client.dart';
 import '../services/auth_service.dart';
 import '../theme/app_theme.dart';
 import 'login_screen.dart';
@@ -18,8 +19,11 @@ import 'signup_screen.dart';
 ///
 /// Étape 2 : pour un utilisateur connecté, affiche également son
 /// statut commerçant (aucun commerce / commerce existant), déduit en
-/// interrogeant [DatabaseHelper.getShopByOwnerId] — `AuthService` ne
-/// fait volontairement aucune requête SQLite lui-même.
+/// interrogeant [ShopRepository.getMine] — `AuthService` ne fait
+/// volontairement aucun appel REST lui-même. Le backend répond 404 si
+/// l'utilisateur n'a pas de commerce ; ce cas est traduit ici en
+/// `null` (voir [_loadMyShop]), pour préserver le contrat déjà utilisé
+/// par le reste de l'écran.
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
 
@@ -28,7 +32,9 @@ class ProfileScreen extends StatefulWidget {
 }
 
 class _ProfileScreenState extends State<ProfileScreen> {
-  Future<Map<String, dynamic>?>? _shopFuture;
+  final ShopRepository _shopRepository = ShopRepository();
+
+  Future<Shop?>? _shopFuture;
 
   @override
   void initState() {
@@ -53,9 +59,19 @@ class _ProfileScreenState extends State<ProfileScreen> {
   /// si l'utilisateur connecté n'a pas de commerce.
   void _refreshShop() {
     final user = AuthService.instance.currentUser;
-    _shopFuture = user == null
-        ? Future.value(null)
-        : DatabaseHelper.instance.getShopByOwnerId(user.id);
+    _shopFuture = user == null ? Future.value(null) : _loadMyShop();
+  }
+
+  /// `GET /shops/me` renvoie 404 (`ApiException`) si l'utilisateur n'a
+  /// pas encore de commerce ; on traduit ce cas en `null` ici, plutôt
+  /// que de laisser l'exception remonter jusqu'au `FutureBuilder`.
+  Future<Shop?> _loadMyShop() async {
+    try {
+      return await _shopRepository.getMine();
+    } on ApiException catch (e) {
+      if (e.statusCode == 404) return null;
+      rethrow;
+    }
   }
 
   Future<void> _goToLogin() async {
@@ -187,7 +203,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
           ),
         ),
         const SizedBox(height: 16),
-        FutureBuilder<Map<String, dynamic>?>(
+        FutureBuilder<Shop?>(
           future: _shopFuture,
           builder: (context, snapshot) {
             if (snapshot.connectionState == ConnectionState.waiting) {
@@ -196,11 +212,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 child: Center(child: CircularProgressIndicator()),
               );
             }
-            final shopRow = snapshot.data;
-            if (shopRow == null) {
+            final shop = snapshot.data;
+            if (shop == null) {
               return _buildNoShopCard();
             }
-            return _buildShopCard(Shop.fromMap(shopRow));
+            return _buildShopCard(shop);
           },
         ),
         const SizedBox(height: 24),

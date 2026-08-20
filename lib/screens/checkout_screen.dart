@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 
-import '../database/database_helper.dart';
 import '../models/cart_item.dart';
+import '../repositories/order_repository.dart';
+import '../services/api_client.dart';
 import '../services/auth_service.dart';
 import '../services/cart_service.dart';
 import '../services/mock_payment_service.dart';
@@ -15,12 +16,15 @@ import 'payment_method_screen.dart';
 /// Écran "Checkout" : résumé en lecture seule du panier avant
 /// paiement.
 ///
-/// Étape 5 : `DatabaseHelper.createOrder` exige désormais un `userId`
-/// non nul et relit lui-même le panier PERSISTÉ de cet utilisateur en
-/// SQLite — jamais une liste transmise par cet écran. Le checkout
-/// nécessite donc explicitement une session ; un visiteur (ou un
-/// utilisateur déconnecté entre-temps) est bloqué avec une invitation
-/// à se connecter plutôt que de risquer une commande sans propriétaire.
+/// Étape 5 / migration REST : `OrderRepository.checkout` crée ET paie
+/// désormais la commande en une seule requête atomique côté backend
+/// (`POST /orders/checkout`), à partir du panier PERSISTÉ de
+/// l'utilisateur authentifié (jamais d'une liste transmise par cet
+/// écran — même garantie que l'ancien `DatabaseHelper.createOrder`).
+/// Le checkout nécessite donc explicitement une session ; un visiteur
+/// (ou un utilisateur déconnecté entre-temps) est bloqué avec une
+/// invitation à se connecter plutôt que de risquer une commande sans
+/// propriétaire.
 class CheckoutScreen extends StatefulWidget {
   const CheckoutScreen({super.key});
 
@@ -29,6 +33,8 @@ class CheckoutScreen extends StatefulWidget {
 }
 
 class _CheckoutScreenState extends State<CheckoutScreen> {
+  final OrderRepository _orderRepository = OrderRepository();
+
   bool _isProcessing = false;
 
   Future<void> _startPayment() async {
@@ -46,42 +52,43 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
 
     if (result == null || !mounted) return; // paiement annulé
 
-    await _finalizeOrder(userId, result);
+    await _finalizeOrder(result);
   }
 
-  Future<void> _finalizeOrder(int userId, PaymentResult payment) async {
+  Future<void> _finalizeOrder(PaymentResult payment) async {
     setState(() => _isProcessing = true);
 
     try {
-      // Le panier lu ici est celui de `userId`, résolu par
-      // DatabaseHelper directement en SQLite — jamais une liste
-      // passée par cet écran.
-      final orderId = await DatabaseHelper.instance.createOrder(
-        userId: userId,
-        paymentMethod: payment.methodId,
-      );
-      await DatabaseHelper.instance.markOrderAsPaid(orderId);
+      // Le panier lu ici est celui de l'utilisateur authentifié,
+      // résolu par le backend depuis le token — jamais une liste
+      // passée par cet écran. `checkout` crée ET paie la commande en
+      // une seule requête atomique, et renvoie directement la
+      // commande créée (plus besoin d'un second appel pour la
+      // relire).
+      final result = await _orderRepository.checkout(payment.methodId);
 
-      // cart_items a déjà été vidé dans la transaction de
-      // createOrder : on ne fait ici que resynchroniser l'état
-      // mémoire, sans repasser par SQLite.
+      // cart_items a déjà été vidé côté backend dans la même
+      // transaction que la création de la commande : on ne fait ici
+      // que resynchroniser l'état mémoire, sans repasser par le
+      // serveur.
       CartService.instance.clearLocalAfterCheckout();
 
       if (!mounted) return;
 
-      final order = await DatabaseHelper.instance.getOrderById(orderId);
-      final total = (order?['total'] as num?)?.toDouble() ?? 0.0;
-
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(
           builder: (_) => OrderConfirmationScreen(
-            orderId: orderId,
-            total: total,
+            orderId: result.order.id!,
+            total: result.order.total,
             paymentMethodLabel: payment.methodLabel,
           ),
         ),
       );
-    } on OrderException catch (e) {
+    } on ApiException catch (e) {
+      // Le backend répond 409 (`ORDER_ERROR`) si le panier est vide
+      // ou si le stock est insuffisant pour une ligne — même message
+      // que l'ancienne `OrderException`, transporté ici par
+      // `ApiException.message`.
       if (!mounted) return;
       setState(() => _isProcessing = false);
       ScaffoldMessenger.of(context).showSnackBar(
