@@ -177,6 +177,56 @@ class ApiClient {
     });
   }
 
+  /// Envoie un fichier en `multipart/form-data` (champ `file`), pour
+  /// les routes d'upload (`POST /uploads/image?owner=...`,
+  /// `POST /uploads/model`).
+  ///
+  /// Réutilise la même gestion d'erreurs/timeout/décodage que
+  /// [_send]/[_handleResponse] : lève une [ApiException] en cas
+  /// d'échec réseau, de timeout, ou de réponse HTTP en erreur.
+  ///
+  /// Ne définit pas de `Content-Type` explicite : `http.MultipartRequest`
+  /// s'en charge lui-même (boundary inclus).
+  Future<dynamic> postMultipart(
+      String path, {
+        required String filePath,
+        String fieldName = 'file',
+        Map<String, String>? queryParams,
+      }) async {
+    final uri = _buildUri(path, queryParams);
+    final request = http.MultipartRequest('POST', uri);
+
+    final authHeaders = _headers()..remove('Content-Type');
+    request.headers.addAll(authHeaders);
+
+    request.files.add(await http.MultipartFile.fromPath(fieldName, filePath));
+
+    http.StreamedResponse streamedResponse;
+    try {
+      streamedResponse = await _client.send(request).timeout(_timeout);
+    } on TimeoutException {
+      throw const ApiException(
+        'Le serveur met trop de temps à répondre. Réessayez.',
+        type: ApiErrorType.timeout,
+      );
+    } on SocketException {
+      throw const ApiException(
+        'Impossible de joindre le serveur. Vérifiez la connexion et '
+            'l\'adresse configurée.',
+        type: ApiErrorType.network,
+      );
+    } on http.ClientException catch (e) {
+      throw ApiException(
+        e.message.isNotEmpty
+            ? e.message
+            : 'Impossible de joindre le serveur.',
+        type: ApiErrorType.network,
+      );
+    }
+
+    final response = await http.Response.fromStream(streamedResponse);
+    return _handleResponse(response);
+  }
   Map<String, String> _headers() {
     final headers = <String, String>{
       'Content-Type': 'application/json; charset=utf-8',

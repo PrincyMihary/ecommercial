@@ -2,18 +2,23 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 
+import '../services/api_client.dart';
 import '../theme/app_theme.dart';
 
 /// Affiche :
 /// - un asset Flutter (`assets/...`) via `Image.asset` ;
-/// - un fichier local du stockage privé (chemin absolu, ex. celui
-///   produit par `ImageStorageService`) via `Image.file` ;
-/// - un fallback visuel propre si le chemin est vide, nul, ou si le
-///   fichier est illisible/inexistant.
+/// - une référence distante backend (`/files/...`, ex. celle
+///   renvoyée par `POST /uploads/image`) via `Image.network`,
+///   résolue avec `ApiClient.instance.baseUrl` ;
+/// - un fichier local (chemin absolu, ex. le fichier temporaire tout
+///   juste sélectionné par `image_picker`, avant la fin de l'upload)
+///   via `Image.file` ;
+/// - un fallback visuel propre si le chemin est vide, nul, ou si
+///   l'image est illisible/inexistante/inaccessible.
 ///
-/// Ne fait jamais planter l'application : toute erreur de lecture
-/// (asset manquant, fichier local absent ou corrompu) retombe sur
-/// [_buildFallback].
+/// Ne fait jamais planter l'application : toute erreur de chargement
+/// (asset manquant, fichier local absent, échec réseau...) retombe
+/// sur [_buildFallback].
 class AppImage extends StatelessWidget {
   final String? path;
   final double? width;
@@ -49,7 +54,22 @@ class AppImage extends StatelessWidget {
         fit: fit,
         errorBuilder: (context, error, stackTrace) => _buildFallback(),
       );
+    } else if (_isRemoteReference(imagePath)) {
+      content = Image.network(
+        _resolveRemoteUrl(imagePath),
+        width: width,
+        height: height,
+        fit: fit,
+        loadingBuilder: (context, child, progress) {
+          if (progress == null) return child;
+          return _buildLoading();
+        },
+        errorBuilder: (context, error, stackTrace) => _buildFallback(),
+      );
     } else {
+      // Chemin local absolu : cas du fichier temporaire tout juste
+      // sélectionné par le picker, affiché immédiatement pendant que
+      // l'upload backend est encore en cours.
       content = Image.file(
         File(imagePath),
         width: width,
@@ -68,6 +88,28 @@ class AppImage extends StatelessWidget {
   }
 
   bool _isAsset(String imagePath) => imagePath.startsWith('assets/');
+
+  /// Référence distante renvoyée par le backend (`POST /uploads/...`),
+  /// toujours de la forme `/files/...` (voir contrat `/uploads`).
+  bool _isRemoteReference(String imagePath) => imagePath.startsWith('/files/');
+
+  String _resolveRemoteUrl(String imagePath) {
+    return '${ApiClient.instance.baseUrl}$imagePath';
+  }
+
+  Widget _buildLoading() {
+    return Container(
+      width: width,
+      height: height,
+      color: AppColors.surface,
+      alignment: Alignment.center,
+      child: const SizedBox(
+        width: 24,
+        height: 24,
+        child: CircularProgressIndicator(strokeWidth: 2),
+      ),
+    );
+  }
 
   Widget _buildFallback() {
     return Container(

@@ -1,20 +1,16 @@
 import 'dart:io';
-import 'dart:math';
 
 import 'package:image_picker/image_picker.dart';
 import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
 
-/// Type de propriétaire d'une image, utilisé pour organiser le stockage
-/// en sous-dossiers dédiés :
+import 'api_client.dart';
+
+/// Type de propriétaire d'une image, utilisé pour renseigner le
+/// paramètre `owner` de `POST /uploads/image?owner=...`.
 ///
-///   <Documents>/uploads/shops/
-///   <Documents>/uploads/products/
-///   <Documents>/uploads/users/
-///
-/// `user` n'est pas encore utilisé (pas de fonctionnalité User dans le
-/// projet actuel) mais l'API est prête pour l'accueillir sans
-/// modification.
+/// `user` n'est pas encore exploité par le backend (pas de
+/// fonctionnalité User dans le projet actuel) mais l'API est prête à
+/// l'accueillir sans modification.
 enum ImageOwnerType { shop, product, user }
 
 /// Erreur métier levée par [ImageStorageService], avec un message déjà
@@ -28,24 +24,25 @@ class ImageStorageException implements Exception {
   String toString() => message;
 }
 
-/// Service central de gestion des images locales de l'application.
+/// Service central de gestion des images de l'application.
 ///
-/// Responsabilités :
+/// Depuis la migration vers le backend, ce service n'est PLUS un
+/// stockage local permanent : il se contente de
 /// - ouvrir le sélecteur d'IMAGES du système via `image_picker` ;
-/// - copier l'image choisie dans le stockage privé de l'app, sous un
-///   nom de fichier unique généré (jamais le nom original) ;
-/// - supprimer une image du stockage privé ;
-/// - vérifier l'existence d'une image.
+/// - envoyer le fichier temporairement sélectionné au backend via
+///   `POST /uploads/image?owner=...` (multipart, champ `file`) ;
+/// - retourner la référence distante (`path`) renvoyée par le serveur ;
+/// - supprimer une référence distante via `DELETE /uploads`.
 ///
-/// Ce service ne connaît ni Product, ni Shop, ni SQLite : il ne
-/// manipule que des chemins de fichiers. Les écrans/formulaires
-/// restent responsables de la logique métier (quand copier, quand
-/// supprimer l'ancienne image, quand mettre à jour la base).
+/// Le fichier sélectionné par `image_picker` ne sert que de source au
+/// multipart : il n'est jamais copié dans
+/// `ApplicationDocumentsDirectory`. Le backend est l'unique stockage
+/// définitif et génère lui-même le nom de fichier final.
 ///
-/// IMPORTANT : ce service est exclusivement dédié aux IMAGES et
-/// n'utilise jamais `file_picker`. La sélection de fichiers génériques
-/// (futurs modèles `.glb`) relève d'un futur service séparé
-/// (`Model3dStorageService`), qui lui utilisera `file_picker`.
+/// Ce service ne connaît ni Product, ni Shop : il ne manipule que des
+/// références de fichiers. Les écrans/formulaires restent
+/// responsables de la logique métier (quand uploader, quand supprimer
+/// l'ancienne image, quand mettre à jour le commerce/produit).
 class ImageStorageService {
   ImageStorageService._();
 
@@ -53,17 +50,17 @@ class ImageStorageService {
 
   static const List<String> _allowedExtensions = ['jpg', 'jpeg', 'png', 'webp'];
 
-  /// Taille maximale acceptée pour une image (8 Mo), volontairement
-  /// généreuse pour un prototype tout en évitant les fichiers aberrants.
+  /// Taille maximale acceptée pour une image (8 Mo), vérifiée
+  /// côté Flutter avant l'envoi, en plus de toute limite backend.
   static const int _maxSizeBytes = 8 * 1024 * 1024;
 
   /// Ouvre le sélecteur d'images du système via `image_picker`, puis
-  /// copie l'image choisie dans le dossier privé correspondant à
-  /// [ownerType].
+  /// envoie l'image choisie au backend pour [ownerType].
   ///
-  /// Retourne le chemin local final, ou `null` si l'utilisateur a
+  /// Retourne la référence distante (`path`, ex :
+  /// `/files/products/product_....jpg`), ou `null` si l'utilisateur a
   /// annulé la sélection. Lève une [ImageStorageException] en cas de
-  /// fichier invalide ou d'erreur de copie.
+  /// fichier invalide ou d'erreur d'envoi.
   Future<String?> pickAndStoreImage({required ImageOwnerType ownerType}) async {
     final ImagePicker picker = ImagePicker();
     XFile? pickedFile;
@@ -87,11 +84,13 @@ class ImageStorageService {
     return storeImageFromPath(sourcePath: pickedFile.path, ownerType: ownerType);
   }
 
-  /// Copie une image déjà présente sur l'appareil (à [sourcePath]) vers
-  /// le stockage privé de l'application, sous un nom unique.
+  /// Valide puis envoie une image déjà présente sur l'appareil (à
+  /// [sourcePath]) au backend, et retourne la référence distante
+  /// (`path`) renvoyée par le serveur.
   ///
-  /// Utile pour réutiliser la logique de copie/validation en dehors du
-  /// sélecteur système si besoin (ex: import programmatique).
+  /// [sourcePath] n'est utilisé que comme source temporaire du
+  /// multipart ; il n'est jamais copié dans un stockage local
+  /// permanent.
   Future<String> storeImageFromPath({
     required String sourcePath,
     required ImageOwnerType ownerType,
@@ -121,75 +120,64 @@ class ImageStorageService {
       throw const ImageStorageException('Image trop volumineuse (maximum 8 Mo).');
     }
 
-    final targetDir = await _ensureUploadsDir(ownerType);
-    final fileName = _generateFileName(ownerType, extension);
-    final destinationPath = p.join(targetDir.path, fileName);
-
     try {
-      await sourceFile.copy(destinationPath);
-    } catch (e) {
-      throw ImageStorageException('Erreur lors de la copie de l\'image : $e');
-    }
+      final response = await ApiClient.instance.postMultipart(
+        '/uploads/image',
+        filePath: sourcePath,
+        queryParams: {'owner': _ownerParam(ownerType)},
+      ) as Map<String, dynamic>;
 
-    return destinationPath;
+      final path = response['path'] as String?;
+      if (path == null || path.isEmpty) {
+        throw const ImageStorageException(
+          "Réponse du serveur invalide lors de l'envoi de l'image.",
+        );
+      }
+      return path;
+    } on ApiException catch (e) {
+      throw ImageStorageException("Erreur lors de l'envoi de l'image : ${e.message}");
+    }
   }
 
-  /// Supprime une image du stockage privé, de façon "best effort".
+  /// Supprime une référence d'image distante, de façon "best effort".
   ///
   /// - Ne fait rien si [imagePath] est nul ou vide.
   /// - Ne fait rien si le chemin correspond à un asset embarqué
   ///   (`assets/...`) : ces fichiers ne sont jamais gérés par ce
-  ///   service et ne doivent jamais être supprimés.
-  /// - Si le fichier n'existe déjà plus, ce n'est PAS considéré comme
-  ///   une erreur.
-  /// - Toute autre erreur de suppression est avalée silencieusement.
+  ///   service.
+  /// - Ne fait rien si la référence n'est pas une référence distante
+  ///   connue (`/files/...`) : ce service ne supprime plus jamais de
+  ///   fichier local.
+  /// - Toute erreur (réseau, 404 backend...) est avalée
+  ///   silencieusement : la suppression backend est elle-même
+  ///   "best effort" (voir contrat `DELETE /uploads`, réponse 204).
   Future<void> deleteImage(String? imagePath) async {
     if (imagePath == null || imagePath.trim().isEmpty) return;
     if (_isAsset(imagePath)) return;
+    if (!_isRemoteReference(imagePath)) return;
 
     try {
-      final file = File(imagePath);
-      if (await file.exists()) {
-        await file.delete();
-      }
+      await ApiClient.instance.delete('/uploads', body: {'path': imagePath});
     } catch (_) {
       // Suppression best-effort : on n'interrompt jamais l'appelant.
     }
   }
 
-  /// Indique si le chemin correspond à un fichier réellement présent.
-  /// Les assets sont considérés comme "existants" par convention :
-  /// leur disponibilité réelle est vérifiée par [AppImage] via
-  /// `errorBuilder`, pas par ce service.
+  /// Indique si la référence est exploitable telle quelle (asset ou
+  /// référence distante). La disponibilité réelle d'une référence
+  /// distante n'est pas vérifiée ici (pas d'appel réseau) : c'est au
+  /// widget d'affichage (ex: `AppImage`) de gérer un éventuel échec de
+  /// chargement via son `errorBuilder`.
   Future<bool> exists(String? imagePath) async {
     if (imagePath == null || imagePath.trim().isEmpty) return false;
-    if (_isAsset(imagePath)) return true;
-    return File(imagePath).exists();
+    return _isAsset(imagePath) || _isRemoteReference(imagePath);
   }
 
   bool _isAsset(String imagePath) => imagePath.startsWith('assets/');
 
-  Future<Directory> _ensureUploadsDir(ImageOwnerType ownerType) async {
-    final documentsDir = await getApplicationDocumentsDirectory();
-    final dir = Directory(p.join(documentsDir.path, 'uploads', _folderName(ownerType)));
-    if (!await dir.exists()) {
-      await dir.create(recursive: true);
-    }
-    return dir;
-  }
+  bool _isRemoteReference(String imagePath) => imagePath.startsWith('/files/');
 
-  String _folderName(ImageOwnerType ownerType) {
-    switch (ownerType) {
-      case ImageOwnerType.shop:
-        return 'shops';
-      case ImageOwnerType.product:
-        return 'products';
-      case ImageOwnerType.user:
-        return 'users';
-    }
-  }
-
-  String _filePrefix(ImageOwnerType ownerType) {
+  String _ownerParam(ImageOwnerType ownerType) {
     switch (ownerType) {
       case ImageOwnerType.shop:
         return 'shop';
@@ -198,14 +186,5 @@ class ImageStorageService {
       case ImageOwnerType.user:
         return 'user';
     }
-  }
-
-  /// Génère un nom de fichier unique, jamais dérivé du nom original
-  /// fourni par l'utilisateur (sécurité + évite les collisions).
-  String _generateFileName(ImageOwnerType ownerType, String extension) {
-    final prefix = _filePrefix(ownerType);
-    final timestamp = DateTime.now().millisecondsSinceEpoch;
-    final random = Random().nextInt(0xFFFFFF).toRadixString(16).padLeft(6, '0');
-    return '${prefix}_${timestamp}_$random.$extension';
   }
 }

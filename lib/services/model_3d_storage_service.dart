@@ -1,9 +1,9 @@
 import 'dart:io';
-import 'dart:math';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
+
+import 'api_client.dart';
 
 /// Erreur métier levée par [Model3dStorageService], avec un message déjà
 /// adapté à un affichage utilisateur (SnackBar, dialogue...).
@@ -16,20 +16,22 @@ class Model3dStorageException implements Exception {
   String toString() => message;
 }
 
-/// Service central de gestion des modèles 3D `.glb` locaux.
+/// Service central de gestion des modèles 3D `.glb`.
 ///
-/// Miroir de [ImageStorageService], mais pour les modèles 3D :
-/// - ouvre le sélecteur de FICHIERS du système via `file_picker`
-///   (jamais `image_picker`) ;
-/// - copie le fichier `.glb` choisi dans le stockage privé de l'app,
-///   sous un nom de fichier unique généré ;
-/// - supprime un modèle du stockage privé ;
-/// - vérifie l'existence d'un modèle.
+/// Miroir de [ImageStorageService], mais pour les modèles 3D. Depuis
+/// la migration vers le backend, ce service n'est PLUS un stockage
+/// local permanent : il se contente de
+/// - ouvrir le sélecteur de FICHIERS du système via `file_picker`
+///   (jamais `image_picker`), restreint aux `.glb` ;
+/// - envoyer le fichier temporairement sélectionné au backend via
+///   `POST /uploads/model` (multipart, champ `file`) ;
+/// - retourner la référence distante (`path`) renvoyée par le serveur ;
+/// - supprimer une référence distante via `DELETE /uploads`.
 ///
-/// Ce service ne connaît ni Product, ni SQLite : il ne manipule que
-/// des chemins de fichiers. C'est à [ProductFormScreen] de décider
-/// quand appeler quoi (même répartition des responsabilités que pour
-/// les images).
+/// Le fichier sélectionné par `file_picker` ne sert que de source au
+/// multipart : il n'est jamais copié dans
+/// `ApplicationDocumentsDirectory`. Le backend génère lui-même le nom
+/// de fichier final.
 class Model3dStorageService {
   Model3dStorageService._();
 
@@ -37,19 +39,17 @@ class Model3dStorageService {
 
   static const List<String> _allowedExtensions = ['glb'];
 
-  /// Taille maximale acceptée pour un modèle 3D (50 Mo). Les fichiers
-  /// `.glb` sont généralement plus volumineux que des images ; cette
-  /// limite reste généreuse pour un prototype tout en évitant les
-  /// fichiers aberrants.
+  /// Taille maximale acceptée pour un modèle 3D (50 Mo), vérifiée
+  /// côté Flutter avant l'envoi, en plus de toute limite backend.
   static const int _maxSizeBytes = 50 * 1024 * 1024;
 
   /// Ouvre le sélecteur de fichiers du système via `file_picker`,
-  /// restreint aux `.glb`, puis copie le fichier choisi dans le
-  /// dossier privé `uploads/models/`.
+  /// restreint aux `.glb`, puis envoie le fichier choisi au backend.
   ///
-  /// Retourne le chemin local final, ou `null` si l'utilisateur a
+  /// Retourne la référence distante (`path`, ex :
+  /// `/files/models/model_....glb`), ou `null` si l'utilisateur a
   /// annulé la sélection. Lève une [Model3dStorageException] en cas
-  /// de fichier invalide ou d'erreur de copie.
+  /// de fichier invalide ou d'erreur d'envoi.
   Future<String?> pickAndStoreModel() async {
     FilePickerResult? result;
 
@@ -83,9 +83,9 @@ class Model3dStorageService {
     return storeModelFromPath(sourcePath: pickedPath);
   }
 
-  /// Copie un fichier `.glb` déjà présent sur l'appareil (à
-  /// [sourcePath]) vers le stockage privé de l'application, sous un
-  /// nom unique.
+  /// Valide puis envoie un fichier `.glb` déjà présent sur l'appareil
+  /// (à [sourcePath]) au backend, et retourne la référence distante
+  /// (`path`) renvoyée par le serveur.
   Future<String> storeModelFromPath({required String sourcePath}) async {
     final sourceFile = File(sourcePath);
 
@@ -111,64 +111,57 @@ class Model3dStorageService {
       throw const Model3dStorageException('Modèle 3D trop volumineux (maximum 50 Mo).');
     }
 
-    final targetDir = await _ensureUploadsDir();
-    final fileName = _generateFileName(extension);
-    final destinationPath = p.join(targetDir.path, fileName);
-
     try {
-      await sourceFile.copy(destinationPath);
-    } catch (e) {
-      throw Model3dStorageException('Erreur lors de la copie du modèle 3D : $e');
-    }
+      final response = await ApiClient.instance.postMultipart(
+        '/uploads/model',
+        filePath: sourcePath,
+      ) as Map<String, dynamic>;
 
-    return destinationPath;
+      final path = response['path'] as String?;
+      if (path == null || path.isEmpty) {
+        throw const Model3dStorageException(
+          "Réponse du serveur invalide lors de l'envoi du modèle 3D.",
+        );
+      }
+      return path;
+    } on ApiException catch (e) {
+      throw Model3dStorageException(
+        "Erreur lors de l'envoi du modèle 3D : ${e.message}",
+      );
+    }
   }
 
-  /// Supprime un modèle 3D du stockage privé, de façon "best effort".
+  /// Supprime une référence de modèle 3D distante, de façon
+  /// "best effort".
   ///
   /// - Ne fait rien si [modelPath] est nul ou vide.
   /// - Ne fait rien si le chemin correspond à un asset embarqué
   ///   (`assets/...`).
-  /// - Un fichier déjà absent n'est PAS considéré comme une erreur.
-  /// - Toute autre erreur de suppression est avalée silencieusement.
+  /// - Ne fait rien si la référence n'est pas une référence distante
+  ///   connue (`/files/...`) : ce service ne supprime plus jamais de
+  ///   fichier local.
+  /// - Toute erreur est avalée silencieusement (suppression backend
+  ///   elle-même "best effort", réponse 204).
   Future<void> deleteModel(String? modelPath) async {
     if (modelPath == null || modelPath.trim().isEmpty) return;
     if (_isAsset(modelPath)) return;
+    if (!_isRemoteReference(modelPath)) return;
 
     try {
-      final file = File(modelPath);
-      if (await file.exists()) {
-        await file.delete();
-      }
+      await ApiClient.instance.delete('/uploads', body: {'path': modelPath});
     } catch (_) {
       // Suppression best-effort : on n'interrompt jamais l'appelant.
     }
   }
 
-  /// Indique si le chemin correspond à un fichier réellement présent.
-  /// Les assets sont considérés comme "existants" par convention.
+  /// Indique si la référence est exploitable telle quelle (asset ou
+  /// référence distante).
   Future<bool> exists(String? modelPath) async {
     if (modelPath == null || modelPath.trim().isEmpty) return false;
-    if (_isAsset(modelPath)) return true;
-    return File(modelPath).exists();
+    return _isAsset(modelPath) || _isRemoteReference(modelPath);
   }
 
   bool _isAsset(String modelPath) => modelPath.startsWith('assets/');
 
-  Future<Directory> _ensureUploadsDir() async {
-    final documentsDir = await getApplicationDocumentsDirectory();
-    final dir = Directory(p.join(documentsDir.path, 'uploads', 'models'));
-    if (!await dir.exists()) {
-      await dir.create(recursive: true);
-    }
-    return dir;
-  }
-
-  /// Génère un nom de fichier unique, jamais dérivé du nom original
-  /// fourni par l'utilisateur.
-  String _generateFileName(String extension) {
-    final timestamp = DateTime.now().millisecondsSinceEpoch;
-    final random = Random().nextInt(0xFFFFFF).toRadixString(16).padLeft(6, '0');
-    return 'model_${timestamp}_$random.$extension';
-  }
+  bool _isRemoteReference(String modelPath) => modelPath.startsWith('/files/');
 }

@@ -2,12 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:model_viewer_plus/model_viewer_plus.dart';
 
 import '../models/product.dart';
+import '../services/api_client.dart';
 import '../services/cart_service.dart';
 import '../services/model_3d_storage_service.dart';
 import '../theme/app_theme.dart';
 
 /// Écran de visualisation AR d'un produit, à partir de son modèle
-/// `.glb` déjà stocké localement (voir [Model3dStorageService]).
+/// `.glb` (voir [Model3dStorageService]).
 ///
 /// Repose sur `model_viewer_plus`, qui embarque le web component
 /// Google `<model-viewer>` dans une WebView. Sur Android, l'AR
@@ -15,8 +16,12 @@ import '../theme/app_theme.dart';
 /// redimensionnement) est entièrement déléguée à Scene Viewer
 /// (application Google), pas à une intégration ARCore directe.
 ///
-/// Ne fait AUCUNE hypothèse sur un hébergement distant : le `.glb`
-/// est lu depuis son chemin local via une URI `file://`.
+/// Le `.glb` peut être :
+/// - un asset embarqué (`assets/...`) ;
+/// - une référence backend distante (`/files/models/...`, cas normal
+///   depuis la migration vers le stockage serveur) ;
+/// - à titre de compatibilité, un chemin de fichier local absolu
+///   (`file://...`).
 class ArViewScreen extends StatefulWidget {
   final Product product;
 
@@ -31,6 +36,7 @@ enum _ArStatus { checking, ready, missingModel, fileNotFound }
 class _ArViewScreenState extends State<ArViewScreen> {
   _ArStatus _status = _ArStatus.checking;
   String? _modelUri;
+  String? _posterUri;
 
   @override
   void initState() {
@@ -45,10 +51,14 @@ class _ArViewScreenState extends State<ArViewScreen> {
       return;
     }
 
-    // Revalidation systématique : le fichier a pu être supprimé ou
-    // déplacé depuis la dernière fois que la fiche produit a été
-    // affichée (l'existence n'est jamais supposée à partir du seul
-    // champ `model3d` non nul).
+    // Revalidation systématique : la référence a pu devenir invalide
+    // depuis la dernière fois que la fiche produit a été affichée
+    // (l'existence n'est jamais supposée à partir du seul champ
+    // `model3d` non nul). Pour une référence distante, ceci ne
+    // vérifie que la forme de la référence (préfixe `/files/`), pas
+    // sa disponibilité réseau réelle : un échec réseau au chargement
+    // est géré séparément par `<model-viewer>` lui-même (voir
+    // `_buildViewer`, écouteur d'erreur natif).
     final exists = await Model3dStorageService.instance.exists(path);
     if (!mounted) return;
 
@@ -58,17 +68,30 @@ class _ArViewScreenState extends State<ArViewScreen> {
     }
 
     setState(() {
-      _modelUri = _toModelUri(path);
+      _modelUri = _resolveReference(path);
+      // Le poster (image 2D) est affiché instantanément par
+      // <model-viewer> pendant que le .glb, potentiellement volumineux,
+      // continue de charger en arrière-plan (voir `reveal: auto` dans
+      // `_buildViewer`) : c'est ce qui règle le "rien ne s'affiche
+      // pendant le chargement" pour les modèles lourds. Fallback sur
+      // le modèle lui-même si le produit n'a pas d'image.
+      final image = widget.product.image;
+      _posterUri = image.trim().isEmpty ? null : _resolveReference(image);
       _status = _ArStatus.ready;
     });
   }
 
-  /// Convertit un chemin de fichier local en URI `file://` correctement
-  /// encodée. Les assets embarqués (`assets/...`) sont laissés tels
-  /// quels : `model_viewer_plus` sait les charger directement.
-  String _toModelUri(String path) {
-    if (path.startsWith('assets/')) return path;
-    return Uri.file(path).toString();
+  /// Résout une référence stockée (asset, backend distant, ou chemin
+  /// local legacy) en une URI/URL directement exploitable par
+  /// `<model-viewer>` (paramètres `src`/`poster`, qui acceptent tous
+  /// deux une URL ou un chemin d'asset).
+  String _resolveReference(String reference) {
+    if (reference.startsWith('assets/')) return reference;
+    if (reference.startsWith('/files/')) {
+      return '${ApiClient.instance.baseUrl}$reference';
+    }
+    // Compatibilité : ancien chemin de fichier local absolu.
+    return Uri.file(reference).toString();
   }
 
   Future<void> _addToCart() async {
@@ -112,9 +135,8 @@ class _ArViewScreenState extends State<ArViewScreen> {
         return _buildError(
           icon: Icons.error_outline,
           title: 'Modèle introuvable',
-          message: 'Le fichier du modèle 3D est introuvable ou a été '
-              "supprimé de l'appareil. Réimportez un modèle depuis la "
-              'fiche produit.',
+          message: 'Le modèle 3D est introuvable ou a été supprimé. '
+              'Réimportez un modèle depuis la fiche produit.',
         );
 
       case _ArStatus.ready:
@@ -129,6 +151,13 @@ class _ArViewScreenState extends State<ArViewScreen> {
       key: ValueKey(_modelUri),
       backgroundColor: const Color(0xFF87CEEB),
       src: _modelUri!,
+      poster: _posterUri,
+      // "auto" (comportement demandé) : le poster (image produit) est
+      // affiché immédiatement, puis remplacé automatiquement par le
+      // modèle 3D dès que celui-ci a fini de charger — utile en
+      // particulier pour un .glb volumineux téléchargé depuis le
+      // backend, pour éviter un écran vide pendant l'attente.
+      reveal: Reveal.auto,
       alt: widget.product.name,
       loading: Loading.eager,
       ar: true,
