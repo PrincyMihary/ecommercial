@@ -34,6 +34,28 @@ class OrderItem {
 
   double get subtotal => price * quantity;
 
+  /// Construit un [OrderItem] à partir du JSON renvoyé par le backend
+  /// REST (`orderItemDto`, voir `orders.mapper.ts`) : utilisé par
+  /// `POST /orders/checkout`, `GET /orders/:id` et
+  /// `GET /orders/:id/items/shop`.
+  ///
+  /// Contrairement à [OrderItem.fromMap] (colonnes SQLite en
+  /// snake_case), le contrat REST utilise des clés camelCase.
+  /// `id`/`orderId`/`productId`/`shopId` sont déjà des `number` JSON
+  /// sûrs (voir `toSafeApiId` côté backend).
+  factory OrderItem.fromApiJson(Map<String, dynamic> json) {
+    return OrderItem(
+      id: json['id'] as int?,
+      orderId: json['orderId'] as int,
+      productId: json['productId'] as int?,
+      productName: json['productName'] as String? ?? 'Produit',
+      quantity: json['quantity'] as int? ?? 0,
+      price: (json['price'] as num?)?.toDouble() ?? 0.0,
+      shopId: json['shopId'] as int?,
+      shopName: json['shopName'] as String?,
+    );
+  }
+
   factory OrderItem.fromMap(Map<String, dynamic> map) {
     return OrderItem(
       id: map['id'] as int?,

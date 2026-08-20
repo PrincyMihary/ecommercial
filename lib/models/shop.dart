@@ -38,6 +38,49 @@ class Shop {
     this.ownerId,
   });
 
+  /// Construit un [Shop] à partir du JSON renvoyé par le backend REST
+  /// (`GET /shops`, `GET /shops/:id`, `GET /shops/me`, réponses de
+  /// `POST /shops` et `PUT /shops/:id` — voir `shops.controller.ts`,
+  /// fonction `toDto`).
+  ///
+  /// Contrairement à [Shop.fromMap] (colonnes SQLite en snake_case),
+  /// le contrat REST utilise des clés camelCase (`ownerId`,
+  /// `googlePlaceId`). `id`/`ownerId` sont déjà des `number` JSON sûrs
+  /// (voir `toSafeApiId` côté backend) : aucune conversion
+  /// supplémentaire n'est nécessaire ni souhaitable ici.
+  factory Shop.fromApiJson(Map<String, dynamic> json) {
+    return Shop(
+      id: json['id'] as int?,
+      name: json['name'] as String? ?? '',
+      description: json['description'] as String? ?? '',
+      address: json['address'] as String?,
+      latitude: (json['latitude'] as num?)?.toDouble(),
+      longitude: (json['longitude'] as num?)?.toDouble(),
+      googlePlaceId: json['googlePlaceId'] as String?,
+      category: json['category'] as String? ?? '',
+      image: json['image'] as String? ?? '',
+      ownerId: json['ownerId'] as int?,
+    );
+  }
+
+  /// Sérialise ce [Shop] pour le corps JSON de `POST /shops` /
+  /// `PUT /shops/:id` (voir `parseShopInput` côté backend). `id` et
+  /// `ownerId` ne sont volontairement jamais inclus : ce sont des
+  /// champs déduits côté serveur (route/token), jamais fournis par le
+  /// client.
+  Map<String, dynamic> toApiJson() {
+    return {
+      'name': name,
+      'description': description,
+      'address': address,
+      'latitude': latitude,
+      'longitude': longitude,
+      'googlePlaceId': googlePlaceId,
+      'category': category,
+      'image': image,
+    };
+  }
+
   factory Shop.fromMap(Map<String, dynamic> map) {
     return Shop(
       id: map['id'] as int?,

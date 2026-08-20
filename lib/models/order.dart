@@ -10,6 +10,25 @@ class Order {
   /// comme `shops.owner_id`, on ne leur invente pas de propriétaire.
   final int? userId;
 
+  /// Nombre total d'articles de la commande. Présent uniquement sur
+  /// les réponses REST qui l'agrègent côté backend (`GET /orders` —
+  /// voir `orders.mapper.ts`, `orderDto`, champ `itemCount`
+  /// optionnel) ; `null` sinon (ex : `Order.fromMap`, réponse de
+  /// `POST /orders/checkout`).
+  final int? itemCount;
+
+  /// Nombre d'articles concernant spécifiquement le commerce du
+  /// vendeur authentifié. Présent uniquement sur
+  /// `GET /orders/shop` (champ `shopItemCount` optionnel de
+  /// `orderDto`) ; `null` sinon.
+  final int? shopItemCount;
+
+  /// Sous-total (prix × quantité) concernant spécifiquement le
+  /// commerce du vendeur authentifié. Présent uniquement sur
+  /// `GET /orders/shop` (champ `shopTotal` optionnel de `orderDto`) ;
+  /// `null` sinon.
+  final double? shopTotal;
+
   const Order({
     this.id,
     required this.total,
@@ -17,7 +36,36 @@ class Order {
     required this.createdAt,
     this.paymentMethod,
     this.userId,
+    this.itemCount,
+    this.shopItemCount,
+    this.shopTotal,
   });
+
+  /// Construit un [Order] à partir du JSON renvoyé par le backend
+  /// REST (`orderDto`, voir `orders.mapper.ts`) : utilisé par
+  /// `POST /orders/checkout`, `GET /orders`, `GET /orders/shop`,
+  /// `GET /orders/:id`, `PATCH /orders/:id/status`,
+  /// `POST /orders/:id/refund`, ainsi que
+  /// `GET /shops/:id/blocking-orders` et
+  /// `GET /products/:id/blocking-orders` (même DTO, voir
+  /// `migration_plan.md` §9).
+  ///
+  /// Contrairement à [Order.fromMap] (colonnes SQLite en snake_case),
+  /// le contrat REST utilise des clés camelCase. `id`/`userId` sont
+  /// déjà des `number` JSON sûrs (voir `toSafeApiId` côté backend).
+  factory Order.fromApiJson(Map<String, dynamic> json) {
+    return Order(
+      id: json['id'] as int?,
+      total: (json['total'] as num?)?.toDouble() ?? 0.0,
+      status: json['status'] as String? ?? '',
+      createdAt: json['createdAt'] as String? ?? '',
+      paymentMethod: json['paymentMethod'] as String?,
+      userId: json['userId'] as int?,
+      itemCount: json['itemCount'] as int?,
+      shopItemCount: json['shopItemCount'] as int?,
+      shopTotal: (json['shopTotal'] as num?)?.toDouble(),
+    );
+  }
 
   factory Order.fromMap(Map<String, dynamic> map) {
     return Order(

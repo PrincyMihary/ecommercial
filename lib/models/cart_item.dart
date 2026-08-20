@@ -20,6 +20,24 @@ class CartItem {
     required this.stock,
   });
 
+  /// Construit un [CartItem] à partir du JSON renvoyé par le backend
+  /// REST (`GET /cart`, et les listes `items` renvoyées par
+  /// `POST /cart/items` / `PUT /cart/items/:productId` /
+  /// `DELETE /cart/items/:productId` — voir `cart.controller.ts`,
+  /// fonction `toDto`). Mêmes clés que [CartItem.fromMap] (déjà
+  /// camelCase côté SQLite pour ce modèle), `productId` déjà un
+  /// `number` JSON sûr (voir `toSafeApiId` côté backend).
+  factory CartItem.fromApiJson(Map<String, dynamic> json) {
+    return CartItem(
+      productId: json['productId'] as int,
+      productName: json['productName'] as String? ?? '',
+      price: (json['price'] as num?)?.toDouble() ?? 0.0,
+      image: json['image'] as String? ?? '',
+      quantity: json['quantity'] as int? ?? 1,
+      stock: json['stock'] as int? ?? 0,
+    );
+  }
+
   factory CartItem.fromMap(Map<String, dynamic> map) {
     return CartItem(
       productId: map['product_id'] as int,
